@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 export function localRequest(req) {
   const host = req.headers.host || '';
@@ -23,13 +24,13 @@ export function destinationSpec(d) {
   if (!['rtmp:', 'rtmps:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.hash) throw new Error('Use an RTMP or RTMPS ingest URL');
   return {
     endpoint: parsed.protocol + '//' + parsed.host,
-    preset: `rtmp_app=${parsed.pathname.replace(/^\/+|\/+$/g, '')}${parsed.search}\nrtmp_playpath=${key}\nrtmp_tcurl=${url.replace(/\/$/, '')}\n`,
+    connection: JSON.stringify({url, key}),
     tls: parsed.protocol === 'rtmps:',
   };
 }
 
 // One CPU encode from the browser canvas; each destination only remuxes it.
-// Destinations have bounded, independent buffers and private FFmpeg presets.
+// Destinations have bounded, independent buffers and private connection files.
 export function createRelay(destinations, send) {
   if (!Array.isArray(destinations) || !destinations.length || destinations.length > 16) throw new Error('Choose 1–16 destinations');
   const specs = destinations.map(destinationSpec);
@@ -51,9 +52,13 @@ export function createRelay(destinations, send) {
     }
   };
   const stopChild = child => {
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    child.kill('SIGTERM');
-    const timer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 1000);
+    if (!child || (!child.omaBsGroup && (child.exitCode !== null || child.signalCode !== null))) return;
+    const kill = signal => {
+      try { if (child.omaBsGroup && child.pid) process.kill(-child.pid, signal); else child.kill(signal); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    };
+    kill('SIGTERM');
+    const timer = setTimeout(() => { if (child.omaBsGroup || (child.exitCode === null && child.signalCode === null)) kill('SIGKILL'); }, 1000);
     timer.unref();
   };
   function close() {
@@ -61,7 +66,7 @@ export function createRelay(destinations, send) {
     closed = true;
     stopChild(encoder);
     for (const w of workers) { clearInterval(w.timer); stopChild(w.child); }
-    // Children load presets before accepting any media; keep them until exit.
+    // Children load connection files before accepting media; keep them until exit.
     const pending = [encoder, ...workers.map(w => w.child)].filter(c => c && c.exitCode === null && c.signalCode === null);
     if (!pending.length) rmSync(folder, {recursive:true,force:true});
     else {
@@ -71,12 +76,11 @@ export function createRelay(destinations, send) {
   }
   try {
     for (const [index, spec] of specs.entries()) {
-      const path = join(folder, `${index}.ffpreset`);
-      writeFileSync(path, spec.preset, {mode:0o600,flag:'wx'});
-      const args = ['-nostdin','-v','error','-stats_period','0.5','-progress','pipe:1','-protocol_whitelist','pipe','-f','mpegts','-i','pipe:0',
-        '-map','0:v:0','-map','0:a?','-c','copy','-rw_timeout','8000000','-rtmp_live','live','-fpre',path];
-      if (spec.tls) args.push('-tls_verify','1');
-      const child = spawn('ffmpeg', [...args,'-f','flv',spec.endpoint], {stdio:['pipe','pipe','ignore']});
+      const path = join(folder, `${index}.json`);
+      writeFileSync(path, spec.connection, {mode:0o600,flag:'wx'});
+      const child = spawn(process.env.OMA_BS_TRANSPORT_PYTHON || '/usr/bin/python3',
+        [fileURLToPath(new URL('./stream_transport.py', import.meta.url)), path, 'ready'], {stdio:['pipe','pipe','ignore'],detached:true});
+      child.omaBsGroup = true;
       const w = {child,failed:false,sending:false,started:0,last:0,time:0,size:0,buffer:'',timer:null};
       workers.push(w);
       const fail = () => { if (!closed && !w.failed) { w.failed = true; clearInterval(w.timer); stopChild(child); notify(); } };
@@ -102,9 +106,10 @@ export function createRelay(destinations, send) {
         child.stdin.write(data);
       };
     }
+    const encoderEnv = {...process.env}; delete encoderEnv.FFREPORT;
     encoder = spawn('ffmpeg', ['-nostdin','-v','error','-protocol_whitelist','pipe','-f','matroska','-i','pipe:0','-map','0:v:0','-map','0:a?',
       '-c:v','libx264','-threads','2','-preset','ultrafast','-tune','zerolatency','-maxrate','4000k','-bufsize','8000k',
-      '-g','60','-c:a','aac','-b:a','160k','-ar','48000','-f','mpegts','pipe:1'], {stdio:['pipe','pipe','ignore']});
+      '-g','60','-c:a','aac','-b:a','160k','-ar','48000','-f','mpegts','pipe:1'], {stdio:['pipe','pipe','ignore'],env:encoderEnv});
     encoder.stdout.on('data', data => { for (const w of workers) w.push(data); });
     encoder.stdin.on('error', () => {});
     encoder.on('error', () => { send({type:'status',state:'error',message:'Could not start FFmpeg.'}); close(); });

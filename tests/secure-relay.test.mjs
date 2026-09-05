@@ -18,11 +18,11 @@ test('relay rejects remote clients, foreign origins, and DNS rebinding', () => {
   assert.equal(localRequest(req('localhost:4000', 'null')), false);
 });
 
-test('credentials stay in preset content; malformed destinations are rejected', () => {
+test('credentials stay in private connection content; malformed destinations are rejected', () => {
   const spec = destinationSpec({url:'rtmps://example.test/private-app?token=private-token',key:'private-key'});
   assert.equal(spec.endpoint, 'rtmps://example.test');
   assert.equal(spec.tls, true);
-  assert.match(spec.preset, /rtmp_playpath=private-key/);
+  assert.equal(JSON.parse(spec.connection).key, 'private-key');
   for (const url of ['https://example.test/live', 'rtmp://user:pass@example.test/live', 'rtmp://example.test/live#secret']) {
     assert.throws(() => destinationSpec({url,key:'key'}));
   }

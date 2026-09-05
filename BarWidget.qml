@@ -117,7 +117,7 @@ BarWidget {
           root.broadcastEnabled = data.broadcastEnabled === true
           root.streamCapable = data.streamCapable === true
           root.streamState = data.streamState || "off"
-          root.streamStatus = {enabled:root.broadcastEnabled, state:root.streamState, destinations:data.state ? data.state.destinations || [] : []}
+          root.streamStatus = {enabled:root.broadcastEnabled, state:root.streamState, destinations:data.state ? data.state.destinations || [] : [], lastFailure:data.state ? data.state.lastStreamFailure || [] : []}
           if (!root.settingsLoaded && data.config) {
             var config = data.config
             root.captureMode = config.capture || "window"
@@ -245,7 +245,7 @@ BarWidget {
         Column {
           Layout.fillWidth: true
           spacing: Style.space(2)
-          Text { text: "OMA-BS · 0.7.3"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.heading; font.bold: true }
+          Text { text: "OMA-BS · 0.7.6"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.heading; font.bold: true }
           Text { text: root.broadcastEnabled ? "STREAM · " + root.streamState.toUpperCase() : root.recording ? "RECORDING ACTIVE" : "OMARCHY BROADCAST STUDIO"; color: root.recording ? Color.urgent : Qt.darker(root.bar.foreground, 1.35); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.letterSpacing: 1.4 }
         }
         Rectangle { width: Style.space(9); height: width; radius: width / 2; color: root.recording ? Color.urgent : Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.25) }

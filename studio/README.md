@@ -40,7 +40,7 @@ ingest URLs, not HTTPS page URLs. The relay accepts 1–16 destinations and up t
 900 characters per URL/key. Failed connections require a manual restart.
 
 The relay listens on `127.0.0.1:4000`, checks local origins, bounds buffers, and
-passes credentials through temporary owner-only FFmpeg presets. RTMPS verifies
+passes credentials through temporary owner-only connection files. RTMPS verifies
 certificates. Imported keys remain in browser local storage and are not encrypted.
 Do not share storage dumps or credentials. Stop the relay with Ctrl+C before
 updating. Stop capture and click Release camera & mic when finished with sources.

@@ -1,6 +1,7 @@
 """Native streaming tests use local listeners only, never real platform accounts."""
 import argparse
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,9 @@ from unittest import mock
 from test_backend import load_backend
 
 FFMPEG = os.environ.get('OMA_BS_TEST_FFMPEG', shutil.which('ffmpeg') or '')
+spec = importlib.util.spec_from_file_location('transport', Path(__file__).resolve().parents[1] / 'studio/stream_transport.py')
+transport = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(transport)
 
 
 def free_port():
@@ -25,6 +29,38 @@ def free_port():
 
 
 class StreamCommandTests(unittest.TestCase):
+    def test_error_categories_never_return_raw_credentials_or_server_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = load_backend(Path(directory))
+            cases = [('Connection refused', 'refused'), ('Failed to resolve hostname', 'dns'),
+                     ('certificate verify failed', 'tls'), ('Authentication failed', 'authentication'),
+                     ('Stream specifier :a:1 matches no streams', 'audio'),
+                     ('Invalid data found when processing input', 'media')]
+            for text, code in cases:
+                result = backend.live_stream.classify_error(text + ' rtmp://private.example/app/private-key-123')
+                self.assertEqual(result[0], code)
+                self.assertNotIn('private', repr(result))
+            self.assertIsNone(backend.live_stream.classify_error('unrecognized private-key-123'))
+
+    def test_failed_worker_drains_stderr_and_exposes_only_classified_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backend = load_backend(Path(directory))
+            command = [sys.executable, '-c', "import sys; sys.stderr.write('x'*200000); sys.stderr.write('Authentication failed: private-key-123'); sys.exit(1)"]
+            with mock.patch.object(backend.live_stream, 'network_command', return_value=command):
+                worker = backend.live_stream.Destination({'id':'test','platform':'twitch'}, Path(directory), 'none')
+            try:
+                deadline = time.monotonic() + 5
+                while worker.proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.02)
+                result = worker.poll()
+                self.assertEqual(result['state'], 'failed')
+                self.assertEqual(result['errorCode'], 'authentication')
+                self.assertEqual(result['exitCode'], 1)
+                self.assertNotIn('private-key-123', json.dumps(result))
+                self.assertFalse(worker.error_reader.is_alive())
+            finally:
+                worker.close()
+
     def test_no_credentials_in_command_and_tls_verification(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -33,11 +69,14 @@ class StreamCommandTests(unittest.TestCase):
             command = backend.live_stream.network_command(destination, root, 'both')
             for secret in ('secret-key', 'secret-token', 'private-app'):
                 self.assertNotIn(secret, repr(command))
-            self.assertEqual(command[-1], 'rtmps://example.test')
-            self.assertEqual(command[command.index('-tls_verify') + 1], '1')
-            self.assertIn('rtmp_playpath=secret-key', (root / 'connection.ffpreset').read_text())
-            self.assertEqual((root / 'connection.ffpreset').stat().st_mode & 0o777, 0o600)
-            self.assertIn('amix=inputs=2', ' '.join(command))
+            saved = transport.read_destination(root / 'connection.json')
+            endpoint, options = transport.connection_options(saved)
+            self.assertEqual(endpoint, 'rtmps://example.test')
+            self.assertEqual(options['tls_verify'], '1')
+            self.assertEqual(options['rtmp_playpath'], 'secret-key')
+            self.assertEqual(options['rtmp_app'], 'private-app?token=secret-token')
+            self.assertEqual((root / 'connection.json').stat().st_mode & 0o777, 0o600)
+            self.assertIn('amix=inputs=2', ' '.join(transport.conversion_command('both')))
 
     def test_capture_uses_one_h264_feed_and_separate_audio(self):
         with tempfile.TemporaryDirectory() as d:
@@ -113,6 +152,7 @@ class NativeStreamTests(unittest.TestCase):
         self.broadcast = self.backend.live_stream.Broadcast(source.stdout, backup, self.config, 'both', destinations)
         states = self.wait(lambda rows: sum(d['state'] == 'sending' for d in rows) == 2 and sum(d['state'] == 'failed' for d in rows) == 1)
         self.assertEqual(len(states), 3)
+        self.assertEqual(next(row for row in states if row['state'] == 'failed')['errorCode'], 'refused')
         self.broadcast.disable()
         before = backup.stat().st_size
         time.sleep(.7)

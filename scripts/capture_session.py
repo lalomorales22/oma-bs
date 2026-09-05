@@ -203,7 +203,7 @@ def launch(backend, args):
             folder = backend.VIDEO_DIR / 'Sources' / Path(filename).stem
             state.update(masterFile=str(folder / 'capture.mkv'), sourcesFolder=str(folder), sourcesReady=False)
         if getattr(args, 'stream', False):
-            state.update(streamCapable=True, broadcastEnabled=True, streamState='connecting', destinations=[],
+            state.update(streamCapable=True, broadcastEnabled=True, streamState='connecting', destinations=[], lastStreamFailure=[],
                          transportFile=str(folder / 'capture.ts'))
         backend.write_json(backend.STATE_FILE, state)
         saved = backend.config()
@@ -376,6 +376,9 @@ def run(backend, args):
                     snapshot = (destinations, stream_state)
                     if snapshot != last_broadcast_status:
                         save(destinations=destinations, streamState=stream_state)
+                        failures = [d for d in destinations if d['state'] == 'failed']
+                        if failures:
+                            save(lastStreamFailure=failures)
                         last_broadcast_status = snapshot
                     last_broadcast_poll = time.monotonic()
             if camera is not None and state.get('cameraOpen'):

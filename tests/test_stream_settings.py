@@ -6,6 +6,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from test_backend import load_backend
 
@@ -77,3 +78,34 @@ class StreamSettingsTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.module.load(self.backend)
         self.assertEqual(external.read_text(), 'keep')
+
+    def test_enable_save_and_stream_read_agree_without_changing_other_channels(self):
+        destination = self.data['destinations'][0]
+        destination['enabled'] = False
+        result = self.save(self.data)
+        self.assertEqual((result['enabledCount'], result['readyCount']), (0, 0))
+        with self.assertRaisesRegex(RuntimeError, 'saved destinations are disabled'):
+            self.backend.live_stream.ready_destinations(self.backend)
+        for _ in range(2):
+            destination['enabled'] = True
+            result = self.save(self.data)
+            self.assertEqual((result['enabledCount'], result['readyCount']), (1, 1))
+            self.assertEqual(self.backend.live_stream.ready_destinations(self.backend), [destination])
+            self.assertFalse(self.module.load(self.backend)['destinations'][1]['enabled'])
+            self.assertNotIn('example-secret', json.dumps(result))
+        destination['enabled'] = False
+        self.assertEqual(self.save(self.data)['readyCount'], 0)
+
+    def test_save_distinguishes_incomplete_enabled_destination(self):
+        self.data['destinations'][0]['key'] = ''
+        result = self.save(self.data)
+        self.assertEqual((result['enabledCount'], result['readyCount']), (1, 0))
+        with self.assertRaisesRegex(RuntimeError, 'server URL and stream key'):
+            self.backend.live_stream.ready_destinations(self.backend)
+
+    def test_save_does_not_confirm_success_if_disk_does_not_match(self):
+        self.save(self.data)
+        self.data['destinations'][0]['enabled'] = False
+        with mock.patch.object(self.backend, 'write_json'):
+            with self.assertRaisesRegex(RuntimeError, 'before verification'):
+                self.save(self.data)

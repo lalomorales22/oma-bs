@@ -9,7 +9,11 @@ reviewed source. Marketplace listing is not a security certification.
 - Native media lives in your media folders; private capture state and streaming
   profiles live under `~/.config/oma-bs`. Stream keys are plaintext in an
   owner-only file (0600). This does not protect them from other programs running
-  as your user. Temporary FFmpeg preset files keep keys out of process arguments.
+  as your user. Temporary owner-only connection files keep keys out of process arguments.
+  The sender receives connection values through an inherited pipe and uses
+  `avio_open2` directly. Its compiler output is cached outside the plugin;
+  source or FFmpeg library ABI changes select a fresh build. No preset routing
+  is used for publishing. Raw native-library logs are classified in memory.
 - Explicit streaming sends media to your enabled RTMP(S) destinations. Prefer
   RTMPS; plain RTMP is unencrypted. RTMPS certificate verification is enabled.
   Use the ingest address issued for your account, not a website page URL.

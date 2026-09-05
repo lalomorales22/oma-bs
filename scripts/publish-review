@@ -5,31 +5,39 @@ import subprocess
 import tempfile
 
 REPO = 'lalomorales22/oma-bs'
-BASE_TREE = 'f333e4ee37cff27e826a1fea660d4aee11150c6a'
+BASE_TREE = 'd08be97a3852f1c8c73d36226c7701a71c3d63a1'
 
 
 def main():
     patch = Path(__file__).resolve().parents[1] / 'release/review.patch'
     if not patch.is_file():
-        raise SystemExit('Run this helper from the downloaded 0.7.3 release archive.')
+        raise SystemExit('Run this helper from the downloaded 0.7.6 release archive.')
     account = subprocess.check_output(['gh', 'api', 'user', '--jq', '.login'], text=True).strip()
     if account != 'lalomorales22':
         raise SystemExit('Use gh auth login with lalomorales22 before publishing this review.')
     downloads = Path.home() / 'Downloads'
     downloads.mkdir(exist_ok=True)
-    folder = Path(tempfile.mkdtemp(prefix='oma-bs-publish-0.7.3-', dir=downloads)) / 'repo'
+    folder = Path(tempfile.mkdtemp(prefix='oma-bs-publish-0.7.6-', dir=downloads)) / 'repo'
     subprocess.run(['gh', 'repo', 'clone', REPO, str(folder)], check=True)
     def git(*args):
         return subprocess.run(['git', '-C', str(folder), *args], check=True)
     tree = subprocess.check_output(['git', '-C', str(folder), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
-    if tree != BASE_TREE:
+    if tree == '0105bdc7bc5f13b9c59d60848904c6fd5d39a8a9':
+        patch = patch.with_name('review-from-0.7.5.patch')
+        if not patch.is_file():
+            raise SystemExit('Incomplete release patch; no files pushed.')
+    elif tree == 'e4b7da215e2242fbaefae2ec60227ceac2d759ff':
+        patch = patch.with_name('review-from-0.7.4.patch')
+        if not patch.is_file():
+            raise SystemExit('Incomplete release patch; no files pushed.')
+    elif tree != BASE_TREE:
         raise SystemExit(f'Repository changed since review; no files pushed. Fresh clone: {folder}')
     git('apply', '--check', str(patch))
     git('apply', str(patch))
     git('config', 'user.name', 'Lalo Morales')
     git('config', 'user.email', '146933685+lalomorales22@users.noreply.github.com')
     git('add', '--all')
-    git('commit', '-m', 'fix: restore native text input in OMA-BS 0.7.3')
+    git('commit', '-m', 'fix: pass private RTMP publishing options directly in 0.7.6')
     git('push', 'origin', 'HEAD:main')
     print('Review published: https://github.com/' + REPO)
     print('Check the new Actions run before marketplace submission.')

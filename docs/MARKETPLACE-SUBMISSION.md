@@ -27,17 +27,20 @@ overlay; an inline video/image/audio gallery; basic layered editing; and
 multi-destination RTMP(S) streaming. The optional browser studio provides
 additional editing and scene tools adapted from my Chroma Canvas application.
 
-The root manifest declares `lalo.oma-bs`, version `0.7.3`, kind `bar-widget`,
+The root manifest declares `lalo.oma-bs`, version `0.7.6`, kind `bar-widget`,
 entry point `BarWidget.qml`, default section `right`. Native capture depends on
 the installed Omarchy helpers, GPU Screen Recorder, FFmpeg/ffprobe, and mpv.
 Qt Multimedia is optional for inline playback. The browser studio additionally
 requires Node.js/npm and installs npm dependencies outside the plugin folder.
+Streaming builds a small C sender using gcc and the headers included in Arch's
+FFmpeg package. The executable is cached outside the plugin under
+`~/.cache/oma-bs/transport`; no binary or downloaded dependency is bundled.
 
 This plugin runs local processes with the user's privileges. Native captures and
 exports remain in the user's media folders. Explicitly pressing Stream sends
 the selected capture and mixed audio to saved enabled destinations and keeps a
 local backup. Merely saving destinations does not start streaming. Native keys
-are local plaintext with owner-only file permissions; temporary FFmpeg presets
+are local plaintext with owner-only file permissions; temporary connection files
 keep credentials out of process arguments. The optional browser relay listens
 only on loopback; LAN phone-camera mode is a separate explicit developer option.
 

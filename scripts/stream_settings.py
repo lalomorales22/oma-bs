@@ -80,5 +80,11 @@ def save(backend, stream):
         raise RuntimeError('Refusing to replace a linked stream settings file')
     backend.write_json(path, data)  # NamedTemporaryFile publishes atomically with mode 0600.
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    # Verify the same file that stream start will read before confirming success.
+    saved = load(backend)['destinations']
+    if saved != data['destinations']:
+        raise RuntimeError('Saved destinations changed before verification. Save again.')
+    enabled = [d for d in saved if d['enabled']]
     # No secrets in the result, notifications, argv, or normal status command.
-    return {'ok': True, 'count': len(data['destinations'])}
+    return {'ok': True, 'count': len(saved), 'enabledCount': len(enabled),
+            'readyCount': sum(bool(d['url'] and d['key']) for d in enabled)}

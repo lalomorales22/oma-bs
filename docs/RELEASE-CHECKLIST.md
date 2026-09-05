@@ -2,6 +2,10 @@
 
 ## Local gates
 
+Streaming tests need gcc and FFmpeg development headers. Arch's `ffmpeg` package
+includes the headers; Debian/Ubuntu also need `libavformat-dev libavutil-dev`.
+Run `python3 studio/stream_transport.py --check` to build/check the cached sender.
+
 ```bash
 python3 -m unittest discover -s tests -v
 node --test tests/*.test.mjs
@@ -19,7 +23,7 @@ QML syntax must parse, but syntax and unit tests cannot replace a real shell run
       versions in the release notes; this targets Quattro, not the old Waybar API.
 - [ ] Save edits, finish captures/exports, close the browser studio, and stop any
       manually launched browser relay before updating. Restart the shell after.
-- [ ] Confirm **OMA-BS · 0.7.3**, five dock tabs, visible footer, and oval
+- [ ] Confirm **OMA-BS · 0.7.6**, five dock tabs, visible footer, and oval
       Stream button beside Record. Check the popup on a smaller/scaled display.
 - [ ] Make a normal display, region, and window take. Test silent, desktop,
       microphone, and both inputs; inspect the saved MP4 and separate audio.
@@ -50,7 +54,7 @@ QML syntax must parse, but syntax and unit tests cannot replace a real shell run
 
 ## GitHub preparation
 
-The public repository is `lalomorales22/oma-bs`. Its initial CI passed. The 0.7.3
+The public repository is `lalomorales22/oma-bs`. Its initial CI passed. The 0.7.6
 archive includes a guarded publishing helper for the owner's authenticated `gh`:
 
 ```bash
@@ -61,8 +65,8 @@ It uses a fresh clone, requires the reviewed baseline tree, applies the bundled
 patch, and pushes normally (never force-pushes). It stops if the repository has
 changed. This helper is archive-only; regular checkouts use their usual Git flow.
 Never stage private runtime/config files, dependency trees, recordings, or keys.
-Wait for CI, add a real redacted screenshot, then create tag `v0.7.3` and a GitHub
-release with CHANGELOG-0.7.3.md. Source archives need prefix `oma-bs/` and must
+Wait for CI, add a real redacted screenshot, then create tag `v0.7.6` and a GitHub
+release with CHANGELOG-0.7.6.md. Source archives need prefix `oma-bs/` and must
 exclude node_modules, caches, and internal symlinks. Validate the extracted copy.
 
 ## Marketplace

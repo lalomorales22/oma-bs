@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply 0.7.3, preserving settings and migrating old npm dependencies."""
+"""Apply 0.7.6, preserving settings and migrating old npm dependencies."""
 import json
 import os
 from pathlib import Path
@@ -14,10 +14,11 @@ TARGET = Path.home() / '.config/omarchy/plugins/lalo.oma-bs'
 FILES = [
     'scripts/oma-bs', 'scripts/oma-bs-studio', 'scripts/studio_runtime.py', 'scripts/capture_session.py', 'scripts/audio_sources.py',
     'scripts/scene_editor.py', 'scripts/stream_settings.py', 'scripts/live_stream.py', 'scripts/update-local',
-    'manifest.json', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG-0.7.3.md',
+    'manifest.json', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG-0.7.6.md',
     'SECURITY.md', 'docs/SECURITY-REVIEW-0.7.2.md', 'CHANGELOG-0.7.2.md',
     'docs/MARKETPLACE-SUBMISSION.md', 'docs/RELEASE-CHECKLIST.md', 'docs/REVIEW.md', 'studio/index.html',
     'studio/vite.config.ts', 'studio/native-stream-settings.mjs', 'studio/secure-relay.mjs', 'studio/streaming-server.js',
+    'studio/stream_transport.py', 'studio/stream_transport.c',
     'studio/services/streamDestinations.ts', 'studio/package.json', 'studio/package-lock.json', 'studio/README.md',
     'studio/phone-signaling.mjs', 'studio/services/streamUpload.ts', 'studio/services/streamAudio.ts',
     'studio/components/Recorder/PhoneCameraModal.tsx', 'studio/.env.example',
@@ -47,9 +48,11 @@ def main():
         if destination.is_symlink() or TARGET.resolve() not in destination.resolve().parents:
             raise SystemExit('Unsafe destination: ' + rel)
     subprocess.run(['omarchy', 'plugin', 'validate', str(SOURCE)], check=True)
+    # Build before disabling/copying anything; keep the binary outside the plugin.
+    subprocess.run(['/usr/bin/python3', str(SOURCE / 'studio/stream_transport.py'), '--check'], check=True)
     backup_root = Path.home() / '.local/state/oma-bs/backups'
     backup_root.mkdir(parents=True, exist_ok=True)
-    backup = Path(tempfile.mkdtemp(prefix='before-0.7.3-', dir=backup_root))
+    backup = Path(tempfile.mkdtemp(prefix='before-0.7.6-', dir=backup_root))
     # Complete all backups before changing the active plugin.
     for rel in FILES:
         original = TARGET / rel
@@ -86,7 +89,7 @@ def main():
         raise
     subprocess.run(['omarchy-shell', 'shell', 'rescanPlugins'], check=True)
     subprocess.run(['omarchy', 'plugin', 'enable', 'lalo.oma-bs'], check=True)
-    print('OMA-BS 0.7.3 installed. Stream URL/key typing and pasting fixed.')
+    print('OMA-BS 0.7.6 installed. Private RTMP publishing transport repaired.')
     print('Advanced studio remains available in the browser.')
     print('After saving work and finishing exports, run: omarchy-restart-shell')
 

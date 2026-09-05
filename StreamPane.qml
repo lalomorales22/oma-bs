@@ -32,7 +32,13 @@ Item {
     dirty = true
   }
   function remove(index) { var copy = destinations.slice(); copy.splice(index, 1); destinations = copy; dirty = true }
+  function setEnabledAndSave(index, value) {
+    if (!loaded || saveProc.running || index < 0 || index >= destinations.length) return
+    change(index, "enabled", value)
+    save(false)
+  }
   function save(openStudio) {
+    if (!loaded || saveProc.running) return
     root.forceActiveFocus()
     saveProc.payload = JSON.stringify({version:1,destinations:destinations})
     saveProc.openAfterSave = openStudio
@@ -61,7 +67,13 @@ Item {
       try {
         var result = JSON.parse(text)
         saveProc.succeeded = result.ok === true
-        root.notice = result.ok ? "Destinations saved. Use the Stream button beside Record to start." : result.error
+        root.notice = result.ok
+          ? (result.readyCount > 0 && result.readyCount === result.enabledCount
+             ? "Saved and verified: " + result.readyCount + " destination(s) ready. Press Stream beside Record."
+             : result.enabledCount > 0
+               ? "Saved, but an enabled destination is missing its URL or key. Complete it and save again."
+               : "Saved, but all destinations are disabled. Choose Enable & save on a channel below.")
+          : result.error
         if (result.ok) root.dirty = false
       } catch (e) { root.notice = "Save ended without a result." }
     } }
@@ -80,7 +92,11 @@ Item {
     Text { Layout.fillWidth: true; text: root.liveStatus.enabled ? "BROADCAST · " + String(root.liveStatus.state).toUpperCase() : "NOT STREAMING"; color: root.foreground; font.pixelSize: Style.font.caption; font.bold: true }
     Repeater {
       model: root.liveStatus.destinations || []
-      Text { required property var modelData; Layout.fillWidth: true; text: modelData.platform.toUpperCase() + " · " + modelData.state + (modelData.message ? " — " + modelData.message : ""); color: root.foreground; wrapMode: Text.Wrap; textFormat: Text.PlainText; font.pixelSize: Style.font.caption }
+      Text { required property var modelData; Layout.fillWidth: true; text: modelData.platform.toUpperCase() + " · " + modelData.state + (modelData.message ? " — " + modelData.message : "") + (modelData.state === "failed" ? " [" + (modelData.errorCode || "unknown") + (modelData.exitCode !== null && modelData.exitCode !== undefined ? ", exit " + modelData.exitCode : "") + "]" : ""); color: root.foreground; wrapMode: Text.Wrap; textFormat: Text.PlainText; font.pixelSize: Style.font.caption }
+    }
+    Repeater {
+      model: !root.liveStatus.enabled ? root.liveStatus.lastFailure || [] : []
+      Text { required property var modelData; Layout.fillWidth: true; text: "Last stream attempt · " + modelData.platform.toUpperCase() + " — " + modelData.message + (modelData.exitCode !== null && modelData.exitCode !== undefined ? " (exit " + modelData.exitCode + ")" : ""); color: root.foreground; wrapMode: Text.Wrap; textFormat: Text.PlainText; font.pixelSize: Style.font.caption }
     }
     RowLayout {
       Layout.fillWidth: true
@@ -109,8 +125,13 @@ Item {
           RowLayout {
             Layout.fillWidth: true
             StudioDropdown { Layout.fillWidth: true; label: "DESTINATION " + (card.index + 1); value: card.destination.platform; options: root.platforms; foreground: root.foreground; onChanged: function(value) { root.forceActiveFocus(); root.change(card.index, "platform", value) } }
-            StudioButton { text: card.destination.enabled ? "Enabled" : "Disabled"; selected: card.destination.enabled; foreground: root.foreground; onClicked: { root.forceActiveFocus(); root.change(card.index, "enabled", !card.destination.enabled) } }
             StudioButton { text: "Remove"; foreground: root.foreground; onClicked: { root.forceActiveFocus(); root.remove(card.index) } }
+          }
+          RowLayout {
+            Layout.fillWidth: true
+            StudioButton { text: "Enable & save"; selected: card.destination.enabled; foreground: root.foreground; onClicked: root.setEnabledAndSave(card.index, true) }
+            StudioButton { text: "Disable & save"; selected: !card.destination.enabled; foreground: root.foreground; onClicked: root.setEnabledAndSave(card.index, false) }
+            Text { Layout.fillWidth: true; text: card.destination.enabled ? "Included in stream" : "Excluded from stream"; color: root.foreground; wrapMode: Text.Wrap; font.pixelSize: Style.font.caption }
           }
           Field { Layout.fillWidth: true; label: "SERVER URL · RTMP / RTMPS"; value: card.destination.url; placeholder: "Paste the server URL from your live dashboard"; onEdited: function(value) { root.change(card.index, "url", value) } }
           Field { Layout.fillWidth: true; label: "STREAM KEY"; value: card.destination.key; secret: !root.showKeys; placeholder: "Paste your stream key"; onEdited: function(value) { root.change(card.index, "key", value) } }

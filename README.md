@@ -5,13 +5,29 @@ capture stack Omarchy already trusts. It turns screen recording into a two-click
 flow, with a native gallery and basic video editing. The advanced browser studio
 is adapted from Chroma Canvas and branded OMA-BS.
 
-## v0.7.3 stream input repair
+## v0.7.6 fixes empty publishing names
+
+FFmpeg 9 read our connection preset but published with an empty application and
+stream name. Native and browser streaming now use a small transport worker that
+passes the private connection options directly to libavformat. Keys stay out of
+process arguments and raw logs. RTMPS certificate verification remains enabled.
+
+The updater builds the worker in `~/.cache/oma-bs/transport`, outside the plugin.
+On Arch, install its build dependency with `sudo pacman -S --needed gcc ffmpeg`.
+Actual Twitch playback still requires the account/device test; local tests verify the RTMP publishing fields,
+audio/video delivery, failure isolation, and rejection of untrusted certificates.
+
+### Destination enable/save
+
+Each destination has **Enable & save** and **Disable & save** actions. Enabling
+again leaves it enabled. Save reads back the profile and confirms how many
+destinations are ready, or explains whether a channel is disabled/incomplete.
 
 The native popup now uses Omarchy’s keyboard-capable panel. Stream URL/key
 fields accept typing and pasting and retain changes immediately.
 
 See [security review](docs/SECURITY-REVIEW-0.7.2.md) for fixes, validation, and
-remaining device checks. See [changelog](CHANGELOG-0.7.3.md) for this update.
+remaining device checks. See [changelog](CHANGELOG-0.7.6.md) for this update.
 
 ## Features
 
@@ -132,8 +148,8 @@ interval, selected 30/60 fps, and a 1920×1080 bounding box. Each destination ad
 its own upload bandwidth (roughly 6.2 Mbit/s including AAC, plus overhead).
 Sixteen profiles is a configuration limit, not a promise of machine/network
 capacity. RTMPS verifies TLS certificates. Native sending supports server URLs
-and keys up to 900 characters each. Secrets use temporary mode-0600 FFmpeg
-presets, not process arguments. Normal stop removes these; a crash can leave
+and keys up to 900 characters each. Secrets use temporary mode-0600 connection
+files, not process arguments. Normal stop removes these; a crash can leave
 private remnants.
 
 Silent takes send silent AAC for stream compatibility; their saved source remains
@@ -196,7 +212,7 @@ the plugin. Never copy node_modules into the plugin folder.
 
 Omarchy watches the plugin folder, but QML can remain cached after updates. Save
 edits, finish captures/exports, close the browser studio, stop any manually launched
-relay, and run `omarchy-restart-shell`. Confirm version 0.7.3 in the popup. If it
+relay, and run `omarchy-restart-shell`. Confirm version 0.7.6 in the popup. If it
 is missing, inspect `qs log -p "$OMARCHY_PATH/shell" --tail 100` for `lalo.oma-bs`
 errors and validate the installed folder with `omarchy plugin validate`.
 

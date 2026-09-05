@@ -1,20 +1,45 @@
 """Owned native RTMP(S) fan-out. Network backpressure never blocks the backup."""
 import os
+import json
+import signal
 from pathlib import Path
 import queue
 import subprocess
 import tempfile
 import threading
 import time
-from urllib.parse import urlsplit
 import stream_settings
+
+
+# Classify in memory and publish only fixed messages, never FFmpeg's raw output:
+# server errors can contain a stream key, private app path, or ingest URL.
+ERROR_TYPES = [
+    ('ffmpeg_options', ('unrecognized option', 'option not found', 'error setting option', 'error reading preset'), 'FFmpeg rejected a streaming option or preset. Check the installed FFmpeg version and report this error category.'),
+    ('authentication', ('authentication failed', 'authorization failed', 'unauthorized', '403 forbidden', 'invalid stream key', 'netstream.publish.badauth', 'netstream.publish.badname', 'server error: authentication'), 'The ingest server rejected publishing. Check account access, stream key, and whether another session is using it.'),
+    ('tls', ('certificate verify failed', 'certificate verification failed', 'certificate is not trusted', 'certificate has expired', 'peer certificate', 'ssl handshake failed', 'tls handshake failed'), 'Secure connection failed during TLS verification or handshake. Check system time, CA certificates, and the RTMPS endpoint.'),
+    ('dns', ('failed to resolve hostname', 'name or service not known', 'temporary failure in name resolution', 'getaddrinfo'), 'The ingest hostname could not be resolved. Check DNS and the server address.'),
+    ('refused', ('connection refused',), 'The ingest server refused the connection. Check its port and whether your network permits it.'),
+    ('timeout', ('connection timed out', 'operation timed out'), 'The ingest connection timed out. Check network access and the selected server.'),
+    ('audio', ('matches no streams', 'cannot find a matching stream', 'invalid audio stream', 'error initializing complex filters'), 'FFmpeg could not find the expected media/audio tracks. Try desktop-only audio and check the saved source tracks.'),
+    ('codec', ('codec not supported', 'not compatible with flv', 'codec is not supported', 'dimensions not set'), 'The captured media is not compatible with the streaming container. Check capture codec and dimensions.'),
+    ('media', ('invalid data found when processing input', 'could not find codec parameters'), 'FFmpeg could not read the captured media. Check the local recording and capture engine.'),
+    ('connection', ('connection reset by peer', 'broken pipe', 'input/output error'), 'The ingest connection ended. Check the platform dashboard and network connection.'),
+]
+
+
+def classify_error(text):
+    lower = text.lower()
+    return next(((code, message) for code, markers, message in ERROR_TYPES
+                 if any(marker in lower for marker in markers)), None)
 
 
 def ready_destinations(backend):
     destinations = stream_settings.load(backend)['destinations']
+    if not destinations:
+        raise RuntimeError('No destinations are saved. Add a channel in Stream and save it.')
     enabled = [d for d in destinations if d['enabled']]
     if not enabled:
-        raise RuntimeError('Add and enable a destination in Stream, then save it first.')
+        raise RuntimeError('Your saved destinations are disabled. Open Stream and choose Enable & save.')
     if any(not d['url'] or not d['key'] for d in enabled):
         raise RuntimeError('Every enabled destination needs a saved server URL and stream key.')
     return enabled
@@ -24,36 +49,25 @@ def check_ffmpeg(config_dir):
     result = subprocess.run(['ffmpeg', '-hide_banner', '-protocols'], capture_output=True, text=True, timeout=8)
     if result.returncode or 'rtmp' not in result.stdout.split() or 'rtmps' not in result.stdout.split():
         raise RuntimeError('Install FFmpeg with RTMP and RTMPS protocol support before streaming.')
+    result = subprocess.run([transport_python(), str(transport_script()), '--check'], capture_output=True, timeout=65)
+    if result.returncode:
+        raise RuntimeError('Streaming transport needs gcc and FFmpeg headers. On Arch: sudo pacman -S --needed gcc ffmpeg')
+
+
+def transport_script():
+    return Path(__file__).resolve().parents[1] / 'studio/stream_transport.py'
+
+
+def transport_python():
+    # Use the stable system Python even when the user's shell uses mise.
+    return os.environ.get('OMA_BS_TRANSPORT_PYTHON', '/usr/bin/python3')
 
 
 def network_command(destination, folder, audio_mode):
-    parsed = urlsplit(destination['url'])
-    host = parsed.hostname
-    if ':' in host:
-        host = '[' + host + ']'
-    endpoint = parsed.scheme + '://' + host + (':' + str(parsed.port) if parsed.port else '')
-    app = parsed.path.strip('/') + ('?' + parsed.query if parsed.query else '')
-    values = {'rtmp_app': app, 'rtmp_playpath': destination['key'], 'rtmp_tcurl': destination['url'].rstrip('/')}
-    if any(len(value) > 900 for value in values.values()):
-        raise RuntimeError('Native streaming supports server URLs and keys up to 900 characters.')
-    # FFmpeg presets apply protocol AVOptions without putting their values in argv.
-    path = folder / 'connection.ffpreset'
+    path = folder / 'connection.json'
     with open(path, 'x', opener=lambda p, f: os.open(p, f, 0o600)) as handle:
-        handle.write(''.join(name + '=' + value + '\n' for name, value in values.items()))
-    command = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-stats_period', '0.5',
-               '-progress', 'pipe:1', '-f', 'mpegts', '-i', 'pipe:0']
-    if audio_mode == 'none':
-        command += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-map', '0:v:0', '-map', '1:a:0', '-shortest']
-    elif audio_mode == 'both':
-        command += ['-filter_complex', '[0:a:0][0:a:1]amix=inputs=2:normalize=1:duration=longest[a]', '-map', '0:v:0', '-map', '[a]']
-    else:
-        command += ['-map', '0:v:0', '-map', '0:a:0']
-    command += ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000',
-                '-rw_timeout', '8000000', '-rtmp_live', 'live',
-                '-fpre', str(path)]
-    if parsed.scheme == 'rtmps':
-        command += ['-tls_verify', '1']
-    return command + ['-f', 'flv', endpoint]
+        json.dump({'url': destination['url'], 'key': destination['key']}, handle)
+    return [transport_python(), str(transport_script()), str(path), audio_mode]
 
 
 class Destination:
@@ -64,6 +78,7 @@ class Destination:
         self.bytes_sent, self.output_time = 0, 0
         self.input_started = 0
         self.closed = False
+        self.error_code, self.error_message = '', ''
         self.stopped = threading.Event()
         self.chunks = queue.Queue(maxsize=32)  # At most 2 MiB per network destination.
         self.folder = tempfile.TemporaryDirectory(prefix='.stream-credentials-', dir=config_dir)
@@ -71,13 +86,26 @@ class Destination:
         try:
             command = network_command(destination, Path(self.folder.name), audio_mode)
             self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                         stderr=subprocess.DEVNULL, bufsize=0)
+                                         stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
         except Exception:
             self.folder.cleanup()
             raise RuntimeError('Could not start a stream destination. Check FFmpeg installation.') from None
         self.writer = threading.Thread(target=self.write, daemon=True)
         self.reader = threading.Thread(target=self.progress, daemon=True)
-        self.writer.start(); self.reader.start()
+        self.error_reader = threading.Thread(target=self.read_errors, daemon=True)
+        self.writer.start(); self.reader.start(); self.error_reader.start()
+
+    def read_errors(self):
+        pending = ''
+        ranks = {code: index for index, (code, _, _) in enumerate(ERROR_TYPES)}
+        while True:
+            raw = self.proc.stderr.read(4096)
+            if not raw: break
+            pending = (pending + raw.decode(errors='replace'))[-8192:]
+            result = classify_error(pending)
+            if result and ranks[result[0]] < ranks.get(self.error_code, len(ranks)):
+                self.error_code, self.error_message = result
+        # Nothing raw is written to capture logs, notifications, or state.json.
 
     def progress(self):
         for raw in self.proc.stdout:
@@ -114,7 +142,7 @@ class Destination:
                     view = view[count:]
         except (OSError, ValueError):
             if not self.stopped.is_set():
-                self.state, self.reason = 'failed', 'Connection ended. Check this destination’s dashboard and credentials.'
+                self.state, self.reason = 'failed', 'Stream worker exited without a recognized error. Report the destination error category and exit code.'
         finally:
             try: self.proc.stdin.close()
             except OSError: pass
@@ -133,26 +161,35 @@ class Destination:
         if self.state not in ('failed', 'off'):
             now = time.monotonic()
             if self.proc.poll() is not None:
-                self.state, self.reason = 'failed', 'Connection ended. Check this destination’s dashboard and credentials.'
+                self.state, self.reason = 'failed', 'Stream worker exited without a recognized error. Report the destination error category and exit code.'
             elif self.last_progress and now - self.last_progress > 15:
                 self.state, self.reason = 'failed', 'Upload stalled. Recording continues locally.'
             elif self.input_started and not self.last_progress and now - self.input_started > 30:
                 self.state, self.reason = 'failed', 'Connection timed out. Check the server URL and stream key.'
             if self.state == 'failed': self.close(failed=True)
         return {'id': self.id, 'platform': self.platform, 'state': self.state,
-                'message': self.reason, 'bytes': self.bytes_sent}
+                'message': self.reason, 'bytes': self.bytes_sent,
+                'errorCode': self.error_code if self.state == 'failed' else '',
+                'exitCode': self.proc.poll()}
 
     def close(self, failed=False):
         if self.closed: return
         self.closed = True
         self.stopped.set()
         if self.proc.poll() is None:
-            self.proc.terminate()
+            try: os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError: pass
             try: self.proc.wait(timeout=.5)
             except subprocess.TimeoutExpired:
-                self.proc.kill(); self.proc.wait()
-        self.writer.join(timeout=1); self.reader.join(timeout=1)
+                os.killpg(self.proc.pid, signal.SIGKILL); self.proc.wait()
+        # A converter can outlive a worker killed during a network write.
+        try: os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        self.writer.join(timeout=1); self.reader.join(timeout=1); self.error_reader.join(timeout=1)
+        if failed and self.error_message:
+            self.reason = self.error_message
         self.proc.stdout.close()
+        self.proc.stderr.close()
         self.folder.cleanup()
         if not failed: self.state = 'off'
 
