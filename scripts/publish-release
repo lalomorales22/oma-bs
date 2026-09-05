@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Publish the prepared v0.7.6 screenshots/docs and release using desktop gh."""
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+
+REPO = 'lalomorales22/oma-bs'
+TAG = 'v0.7.6'
+BASE_TREE = 'b896cc6f80935c79ffa00c07da44ed87e2e54d43'
+
+
+def run(args, **kwargs):
+    return subprocess.run(args, check=True, **kwargs)
+
+
+def read(args):
+    return subprocess.check_output(args, text=True).strip()
+
+
+def main():
+    kit = Path(__file__).resolve().parents[1]
+    patch = kit / 'release/publish.patch'
+    expected_file = kit / 'release/expected-tree.txt'
+    if not patch.is_file() or not expected_file.is_file():
+        raise SystemExit('Run this helper from the extracted oma-bs-release-v0.7.6 kit.')
+    expected = expected_file.read_text().strip()
+    if read(['gh', 'api', 'user', '--jq', '.login']) != 'lalomorales22':
+        raise SystemExit('Sign in to gh as lalomorales22 first.')
+    downloads = Path.home() / 'Downloads'
+    downloads.mkdir(exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix='oma-bs-release-publish-', dir=downloads))
+    checkout = work / 'repo'
+    run(['gh', 'repo', 'clone', REPO, str(checkout)])
+    def git(*args):
+        return ['git', '-C', str(checkout), *args]
+    tree = read(git('rev-parse', 'HEAD^{tree}'))
+    if tree == BASE_TREE:
+        run(git('apply', '--check', str(patch)))
+        run(git('apply', str(patch)))
+        run(git('add', '--all'))
+        if read(git('write-tree')) != expected:
+            raise SystemExit('Prepared files do not match the reviewed tree; nothing pushed.')
+        run(git('config', 'user.name', 'Lalo Morales'))
+        run(git('config', 'user.email', '146933685+lalomorales22@users.noreply.github.com'))
+        run(git('commit', '-m', 'docs: add real screenshots and prepare OMA-BS v0.7.6 release'))
+        run(git('push', 'origin', 'HEAD:main'))
+    elif tree != expected:
+        raise SystemExit(f'Repository changed; nothing pushed. Checkout retained: {checkout}')
+    commit = read(git('rev-parse', 'HEAD'))
+    print('Waiting for GitHub Actions on the release commit…', flush=True)
+    deadline = time.monotonic() + 600
+    while True:
+        runs = json.loads(read(['gh', 'run', 'list', '--repo', REPO, '--workflow', 'ci.yml',
+                               '--commit', commit, '--limit', '5', '--json', 'status,conclusion,databaseId']))
+        if runs and runs[0]['status'] == 'completed':
+            if runs[0]['conclusion'] != 'success':
+                raise SystemExit('CI did not pass; release not published. Fix the failing run, then rerun this helper.')
+            break
+        if time.monotonic() >= deadline:
+            raise SystemExit('CI is still pending; release not published. Rerun this helper when CI finishes.')
+        time.sleep(3)
+    # Never move an existing version tag to different code.
+    tags = read(git('ls-remote', '--tags', 'origin', f'refs/tags/{TAG}', f'refs/tags/{TAG}^{{}}'))
+    if tags:
+        refs = dict(line.split()[::-1] for line in tags.splitlines())
+        tagged = refs.get(f'refs/tags/{TAG}^{{}}', refs.get(f'refs/tags/{TAG}'))
+        if tagged != commit:
+            raise SystemExit('The release tag already points to different code; it was not changed.')
+    existing = subprocess.run(['gh', 'api', f'repos/{REPO}/releases/tags/{TAG}'], capture_output=True, text=True)
+    if existing.returncode == 0:
+        release = json.loads(existing.stdout)
+        if release.get('draft'):
+            raise SystemExit('A draft already exists. Review it on GitHub; this helper did not replace it.')
+        print('Release already published: ' + release['html_url'])
+        return
+    if 'HTTP 404' not in existing.stderr:
+        raise SystemExit('Could not check existing releases; no release created. Check gh connectivity/access.')
+    archive = work / 'oma-bs-v0.7.6.tar.gz'
+    run(git('archive', '--format=tar.gz', '--prefix=oma-bs/', '-o', str(archive), 'HEAD'))
+    checksum = work / 'SHA256SUMS'
+    checksum.write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')
+    notes = work / 'release-notes.md'
+    text = (checkout / 'docs/RELEASE-0.7.6.md').read_text()
+    text += f'\nRelease commit: `{commit}` (GitHub Actions passed before publication).\n\n## Screenshots\n'
+    for name, caption in [('capture-gallery', 'Capture and gallery'), ('editor-layers', 'Editor and layers'),
+                          ('stream-destinations', 'Streaming destinations; key masked')]:
+        text += f'\n![{caption}](https://raw.githubusercontent.com/{REPO}/{TAG}/docs/screenshots/{name}.png)\n'
+    notes.write_text(text)
+    run(['gh', 'release', 'create', TAG, str(archive), str(checksum), '--repo', REPO,
+         '--target', commit, '--title', 'OMA-BS Studio v0.7.6', '--notes-file', str(notes), '--latest'])
+    print('Published: https://github.com/' + REPO + '/releases/tag/' + TAG)
+    print('Release checkout and assets retained: ' + str(work))
+
+
+if __name__ == '__main__':
+    main()

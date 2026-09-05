@@ -1,8 +1,10 @@
 # Prepared marketplace submission
 
-Status: draft, not submitted. The public repository exists and its initial CI
-passed. Publish the reviewed update and complete the hardware checks in
-[RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) before sending this form.
+Status: draft, not submitted. Public v0.7.6 passed GitHub Actions. The maintainer
+has confirmed Twitch streaming and the fresh-install check on his device.
+Three real screenshots are included in the README. The GitHub release is
+prepared for publication using `scripts/publish-release` from its release kit. See
+[RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) for the verification scope.
 
 The official route is the marketplace's **Submit plugin issue form**, followed
 by automated validation of the public repository and maintainer review. It is

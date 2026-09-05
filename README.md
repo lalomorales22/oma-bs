@@ -5,6 +5,28 @@ capture stack Omarchy already trusts. It turns screen recording into a two-click
 flow, with a native gallery and basic video editing. The advanced browser studio
 is adapted from Chroma Canvas and branded OMA-BS.
 
+## Screenshots
+
+Real captures of OMA-BS v0.7.6 running on the maintainer's Omarchy desktop.
+Click a screenshot to view it at full resolution.
+
+**Capture controls and media gallery**
+
+[![OMA-BS capture controls and image gallery](docs/screenshots/capture-gallery.png)](docs/screenshots/capture-gallery.png)
+
+<details>
+<summary>Editor and streaming screenshots</summary>
+
+**Editor with video, image, and audio layers**
+
+[![OMA-BS editor with canvas controls and media layers](docs/screenshots/editor-layers.png)](docs/screenshots/editor-layers.png)
+
+**Stream destination setup with the key masked**
+
+[![OMA-BS stream destination setup](docs/screenshots/stream-destinations.png)](docs/screenshots/stream-destinations.png)
+
+</details>
+
 ## v0.7.6 fixes empty publishing names
 
 FFmpeg 9 read our connection preset but published with an empty application and

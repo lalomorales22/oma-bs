@@ -1,5 +1,17 @@
 # Release checklist
 
+## Confirmed on September 5, 2026
+
+- The maintainer reports that Twitch broadcasting, ending the stream while
+  retaining the local recording, and saving/playback passed on his device.
+- The maintainer reports that the fresh-install check passed.
+- Public v0.7.6 commit `3624ec822f76a66ff153b458ed18bab77f84b03d` passed
+  [GitHub Actions](https://github.com/lalomorales22/oma-bs/actions/runs/33986733331).
+
+The broader scenario checklist below is retained for future release testing;
+these confirmations do not imply every capture mode or platform was tested.
+The release notes are in [RELEASE-0.7.6.md](RELEASE-0.7.6.md).
+
 ## Local gates
 
 Streaming tests need gcc and FFmpeg development headers. Arch's `ffmpeg` package
