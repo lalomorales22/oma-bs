@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Apply 0.7.1, preserving settings and migrating old npm dependencies."""
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+from studio_runtime import migrate_dependencies, restore_moves, runtime_path, stop_studio_servers
+from capture_session import busy
+
+SOURCE = Path(__file__).resolve().parent.parent
+TARGET = Path.home() / '.config/omarchy/plugins/lalo.oma-bs'
+FILES = [
+    'scripts/oma-bs', 'scripts/oma-bs-studio', 'scripts/studio_runtime.py', 'scripts/capture_session.py', 'scripts/audio_sources.py',
+    'scripts/scene_editor.py', 'scripts/stream_settings.py', 'scripts/live_stream.py', 'scripts/update-local',
+    'manifest.json', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG-0.7.1.md',
+    'docs/MARKETPLACE-SUBMISSION.md', 'docs/RELEASE-CHECKLIST.md', 'docs/REVIEW.md', 'studio/index.html',
+    'studio/vite.config.ts', 'studio/native-stream-settings.mjs', 'studio/secure-relay.mjs', 'studio/streaming-server.js',
+    'studio/services/streamDestinations.ts', 'studio/package.json', 'studio/package-lock.json', 'studio/README.md',
+    'studio/public/manifest.webmanifest', 'studio/public/icon.svg', 'studio/metadata.json', 'studio/index.css',
+    'studio/components/AppHeader.tsx', 'studio/components/modals/WelcomeModal.tsx',
+    'studio/components/PhoneCameraPage.tsx', 'studio/components/ui/ErrorBoundary.tsx',
+    'studio/components/Sidebar/RightSidebar.tsx', 'studio/components/RecorderStudio.tsx',
+    'StudioButton.qml', 'StudioSection.qml', 'StudioScrollBar.qml', 'StudioDropdown.qml',
+    'NativeGallery.qml', 'VideoPreview.qml', 'BarWidget.qml', 'MediaDock.qml', 'EditorPane.qml', 'EditorField.qml', 'StreamPane.qml',
+]
+
+def main():
+    if SOURCE == TARGET.resolve():
+        raise SystemExit('Extract this update separately in Downloads first.')
+    if not (TARGET / 'manifest.json').is_file():
+        raise SystemExit('Existing lalo.oma-bs installation not found.')
+    if json.loads((TARGET / 'manifest.json').read_text()).get('id') != 'lalo.oma-bs':
+        raise SystemExit('Unexpected target manifest; no files changed.')
+    if subprocess.run(['pgrep', '-f', '^gpu-screen-recorder'], stdout=subprocess.DEVNULL).returncode == 0:
+        raise SystemExit('Stop recording and close the studio tab before updating.')
+    if busy(Path(os.environ.get('OMA_BS_CONFIG_DIR', Path.home() / '.config/oma-bs'))):
+        raise SystemExit('Cancel capture or finish saving before updating OMA-BS.')
+    for rel in FILES:
+        if not (SOURCE / rel).is_file():
+            raise SystemExit('Incomplete update: ' + rel)
+        destination = TARGET / rel
+        if destination.is_symlink() or TARGET.resolve() not in destination.resolve().parents:
+            raise SystemExit('Unsafe destination: ' + rel)
+    subprocess.run(['omarchy', 'plugin', 'validate', str(SOURCE)], check=True)
+    backup_root = Path.home() / '.local/state/oma-bs/backups'
+    backup_root.mkdir(parents=True, exist_ok=True)
+    backup = Path(tempfile.mkdtemp(prefix='before-0.7.1-', dir=backup_root))
+    # Complete all backups before changing the active plugin.
+    for rel in FILES:
+        original = TARGET / rel
+        if original.exists():
+            saved = backup / rel
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original, saved)
+    print('Backup: ' + str(backup), flush=True)
+    runtime = runtime_path(TARGET)
+    stop_studio_servers([TARGET / 'studio', runtime])
+    subprocess.run(['omarchy', 'plugin', 'disable', 'lalo.oma-bs'], check=True)
+    moves = []
+    try:
+        migrate_dependencies(TARGET, runtime, moves)
+        if moves:
+            print('Dependencies relocated to: ' + str(runtime / 'node_modules'), flush=True)
+        for rel in FILES:
+            destination = TARGET / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SOURCE / rel, destination)
+        os.chmod(TARGET / 'scripts/oma-bs', 0o755)
+        os.chmod(TARGET / 'scripts/oma-bs-studio', 0o755)
+        subprocess.run(['omarchy', 'plugin', 'validate', str(TARGET)], check=True)
+    except Exception:
+        for rel in FILES:
+            if (backup / rel).exists():
+                shutil.copy2(backup / rel, TARGET / rel)
+            elif (TARGET / rel).exists():
+                saved = backup / 'failed-new-files' / rel
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(TARGET / rel), str(saved))
+        restore_moves(moves)
+        print('Update failed; previous files restored. Plugin left disabled.')
+        raise
+    subprocess.run(['omarchy-shell', 'shell', 'rescanPlugins'], check=True)
+    subprocess.run(['omarchy', 'plugin', 'enable', 'lalo.oma-bs'], check=True)
+    print('OMA-BS 0.7.1 installed. Bordered controls, matching oval capture buttons, and a fading themed scrollbar.')
+    print('Advanced studio remains available in the browser.')
+    print('After saving work and finishing exports, run: omarchy-restart-shell')
+
+if __name__ == '__main__':
+    main()

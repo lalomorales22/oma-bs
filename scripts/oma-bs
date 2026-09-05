@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""OMA-BS backend: a small, dependency-free bridge between QML and Omarchy."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import tempfile
+import hashlib
+import math
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+# The shell watches this source tree. Runtime imports must not write into it.
+sys.dont_write_bytecode = True
+import capture_session
+import scene_editor
+import stream_settings
+import live_stream
+from concurrent.futures import ThreadPoolExecutor
+
+
+APP_ID = "lalo.oma-bs"
+HOME = Path(os.environ.get("OMA_BS_HOME", Path.home()))
+CONFIG_DIR = Path(os.environ.get("OMA_BS_CONFIG_DIR", HOME / ".config" / "oma-bs"))
+STATE_FILE = CONFIG_DIR / "state.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+VIDEO_DIR = Path(os.environ.get("OMA_BS_VIDEO_DIR", HOME / "Videos" / "OMA-BS"))
+IMAGE_DIR = Path(os.environ.get("OMA_BS_IMAGE_DIR", HOME / "Pictures" / "OMA-BS"))
+AUDIO_EXT = {'.flac', '.wav', '.mp3', '.m4a', '.aac', '.ogg', '.opus'}
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "capture": "window",
+    "audio": "both",
+    "webcam": False,
+    "webcamSize": "medium",
+    "microphone": "default_input",
+    "camera": "",
+    "fps": 60,
+    "separateAudio": True,
+    "saveSeparateTracks": True,
+    "destinations": [],
+}
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else fallback.copy()
+    except (OSError, json.JSONDecodeError):
+        return fallback.copy()
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False, encoding="utf-8") as handle:
+        handle.write(json.dumps(value, indent=2) + "\n")
+        temporary = Path(handle.name)
+    temporary.replace(path)
+
+
+def config() -> dict[str, Any]:
+    return {**DEFAULT_CONFIG, **read_json(CONFIG_FILE, DEFAULT_CONFIG)}
+
+
+def is_recording() -> bool:
+    result = subprocess.run(
+        ["pgrep", "-f", "^gpu-screen-recorder"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def process_info(pid: int) -> dict[str, Any] | None:
+    try:
+        folder = Path('/proc') / str(pid)
+        if folder.stat().st_uid != os.getuid():
+            return None
+        fields = (folder / 'stat').read_text().rsplit(')', 1)[1].split()
+        args = (folder / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
+        return {'pid': pid, 'session': int(fields[3]), 'ticks': fields[19],
+                'alive': fields[0] != 'Z', 'args': args}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def is_overlay(info: dict[str, Any]) -> bool:
+    args = info['args']
+    return bool(args and Path(args[0]).name == 'mpv'
+                and '--title=WebcamOverlay' in args
+                and any(arg.startswith('av://v4l2:') for arg in args))
+
+
+def overlays(session: int | None = None) -> list[dict[str, Any]]:
+    result = []
+    for folder in Path('/proc').iterdir():
+        if not folder.name.isdigit():
+            continue
+        info = process_info(int(folder.name))
+        if info and info['alive'] and is_overlay(info) and (session is None or info['session'] == session):
+            result.append(info)
+    return result
+
+
+def close_overlays(targets: list[dict[str, Any]]) -> int:
+    closed = 0
+    for target in targets:
+        # Pin the process before rechecking its identity: never signal a reused PID.
+        try:
+            fd = os.pidfd_open(target['pid'])
+            try:
+                current = process_info(target['pid'])
+                if current and current['ticks'] == target['ticks'] and is_overlay(current):
+                    signal.pidfd_send_signal(fd, signal.SIGTERM)
+                    closed += 1
+            finally:
+                os.close(fd)
+        except ProcessLookupError:
+            pass
+    return closed
+
+
+def webcam_off() -> dict[str, Any]:
+    state = read_json(STATE_FILE, {})
+    if state.get('engine') == 'oma-bs' and capture_session.busy(CONFIG_DIR):
+        return capture_session.request(sys.modules[__name__], state, 'camera-off')
+    # Explicit user action: close only native mpv WebcamOverlay capture windows.
+    count = close_overlays(overlays())
+    return {'ok': True, 'message': 'Webcam close requested' if count else 'No native webcam overlay is open'}
+
+
+def status() -> dict[str, Any]:
+    state = read_json(STATE_FILE, {})
+    if state.get('engine') == 'oma-bs':
+        busy = capture_session.busy(CONFIG_DIR)
+        state = read_json(STATE_FILE, state)
+        if not busy and state.get('phase') in {'starting', 'recording', 'stopping', 'finishing'}:
+            state = {**state, 'phase': 'ended', 'recording': False, 'cameraOpen': False,
+                     'message': 'Capture session exited. Check the file and capture.log.'}
+        phase = state.get('phase')
+        return {'ok': True, 'config': config(), 'state': state, 'busy': busy,
+                'streamCapable': busy and state.get('streamCapable', False),
+                'broadcastEnabled': busy and state.get('broadcastEnabled', False),
+                'streamState': state.get('streamState', 'off') if busy else 'off',
+                'recording': busy and phase in {'recording', 'stopping'},
+                'starting': busy and phase == 'starting',
+                'stopping': busy and phase in {'stopping', 'finishing'},
+                'cameraOpen': busy and state.get('cameraOpen', False),
+                'externalRecording': not busy and is_recording()}
+    active = is_recording()
+    if state.get('phase') not in {'starting', 'recording'}:
+        return {'ok': True, 'config': config(), 'state': state, 'recording': False,
+                'busy': False, 'starting': False, 'cameraOpen': bool(overlays()),
+                'externalRecording': active}
+    changed = False
+    if state.get('sessionPid') and state.get('phase') in {'starting', 'recording'}:
+        cameras = overlays(state['sessionPid'])
+        if cameras:
+            state['cameras'] = cameras
+            changed = True
+    if active and state.get('phase') == 'starting':
+        state.update({'phase': 'recording', 'sawCapture': True})
+        changed = True
+    launcher = process_info(state.get('sessionPid', 0)) if state.get('sessionPid') else None
+    launcher_alive = bool(launcher and launcher['alive'] and launcher['ticks'] == state.get('launcherTicks'))
+    if not active and state.get('phase') in {'starting', 'recording'} and not launcher_alive:
+        close_overlays(state.get('cameras', []))
+        state.update({'recording': False, 'phase': 'ended', 'stoppedAt': now(),
+                      'message': 'Recording ended outside OMA-BS; check playback and capture.log.'
+                      if state.get('sawCapture') else 'Capture did not start or the picker was cancelled.'})
+        changed = True
+    if changed:
+        write_json(STATE_FILE, state)
+    return {"ok": True, "recording": active, "config": config(), "state": state,
+            'cameraOpen': bool(overlays()), 'starting': state.get('phase') == 'starting'}
+
+
+def require(command: str) -> None:
+    if shutil.which(command) is None:
+        raise RuntimeError(f"Required command is missing: {command}")
+
+
+def notify(title: str, message: str = "") -> None:
+    command = shutil.which("omarchy-notification-send") or shutil.which("notify-send")
+    if not command:
+        return
+    args = [command, title]
+    if message:
+        args.append(message)
+    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def start(args: argparse.Namespace) -> dict[str, Any]:
+    return capture_session.launch(sys.modules[__name__], args)
+
+
+def stop() -> dict[str, Any]:
+    state = read_json(STATE_FILE, {})
+    if state.get('engine') == 'oma-bs':
+        if capture_session.busy(CONFIG_DIR):
+            return capture_session.request(sys.modules[__name__], state, 'stop')
+        return {'ok': True, 'message': 'OMA-BS capture is already stopped.'}
+    require("omarchy-capture-screenrecording")
+    if not is_recording():
+        result = webcam_off()
+        result['message'] = 'Recorder already stopped. ' + result['message']
+        return result
+    if state.get('phase') not in {'starting', 'recording'}:
+        return {'ok': False, 'error': 'No OMA-BS recording is active. Stop the other recorder in its own app.'}
+    completed = subprocess.run(
+        ["omarchy-capture-screenrecording", "--stop-recording"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    state = read_json(STATE_FILE, {})
+    state.update({"recording": False, "phase": "stopped", "stoppedAt": now()})
+    close_overlays(state.get('cameras', []))
+    if completed.stdout.strip():
+        state["lastFile"] = completed.stdout.strip().splitlines()[-1]
+    write_json(STATE_FILE, state)
+    if completed.returncode != 0 or is_recording():
+        raise RuntimeError(completed.stderr.strip() or "Could not stop recording")
+    return {"ok": True, "message": "Recorder stopped — check the gallery for your file", "state": state}
+
+
+def media(kind: str, limit: int, thumbnails: bool = False) -> dict[str, Any]:
+    video_ext = {".mp4", ".mkv", ".webm", ".mov", ".gif"}
+    image_ext = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
+    extensions = video_ext if kind == "video" else AUDIO_EXT if kind == 'audio' else image_ext
+    roots = [VIDEO_DIR / 'Exports', VIDEO_DIR, HOME / "Videos"] if kind == "video" else [IMAGE_DIR, HOME / "Pictures"]
+    if kind == 'audio':
+        roots = [HOME / 'Music', HOME / 'Music/OMA-BS'] + list((VIDEO_DIR / 'Sources').glob('*'))
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.glob("*"):
+            resolved = path.resolve()
+            if path.is_file() and not path.name.startswith('.') and path.suffix.lower() in extensions and resolved not in seen:
+                seen.add(resolved)
+                files.append(path)
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    items = [
+        {
+            "name": (path.parent.name + ' · ' + path.name) if kind == 'audio' and VIDEO_DIR / 'Sources' in path.parents else path.name,
+            "path": str(path.resolve()),
+            "uri": path.resolve().as_uri(),
+            "size": path.stat().st_size,
+            "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes"),
+            "kind": kind,
+        }
+        for path in files[:limit]
+    ]
+    if thumbnails:
+        def preview(item):
+            try:
+                item['thumbnail'] = inspect_media(item['path']).get('thumbnail', '')
+            except (RuntimeError, OSError, subprocess.TimeoutExpired):
+                pass  # An unfinished take must not prevent browsing finished files.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(preview, items[:12]))
+    return {"ok": True, "kind": kind, "items": items}
+
+
+def safe_media_path(raw: str) -> Path:
+    path = Path(raw).expanduser().resolve()
+    allowed = [VIDEO_DIR.resolve(), IMAGE_DIR.resolve(), (HOME / "Videos").resolve(), (HOME / "Pictures").resolve(), (HOME / 'Music').resolve()]
+    if not any(path == root or root in path.parents for root in allowed):
+        raise RuntimeError("Refusing to open a path outside the media folders")
+    if not path.exists():
+        raise RuntimeError("Media file no longer exists")
+    return path
+
+
+def inspect_media(raw: str, thumbnail: bool = True) -> dict[str, Any]:
+    path = safe_media_path(raw)
+    if not path.is_file():
+        raise RuntimeError('Select a media file, not a folder')
+    if path.suffix.lower() not in {'.mp4', '.mkv', '.webm', '.mov', '.gif', '.png', '.jpg', '.jpeg', '.webp', '.avif'} | AUDIO_EXT:
+        raise RuntimeError('Unsupported media format')
+    require('ffprobe')
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-show_format', '-show_streams',
+                            '-of', 'json', str(path)], capture_output=True, text=True, timeout=20)
+    if probe.returncode:
+        raise RuntimeError('Cannot read this media file; it may still be recording')
+    data = json.loads(probe.stdout)
+    video = next((s for s in data.get('streams', []) if s.get('codec_type') == 'video'), None)
+    audio = next((s for s in data.get('streams', []) if s.get('codec_type') == 'audio'), None)
+    is_audio = path.suffix.lower() in AUDIO_EXT
+    if (is_audio and not audio) or (not is_audio and not video):
+        raise RuntimeError('No playable media stream found')
+    video = video or {}
+    try:
+        duration = float(data.get('format', {}).get('duration', video.get('duration', 0)))
+    except (ValueError, TypeError):
+        duration = 0
+    if not math.isfinite(duration) or duration < 0:
+        duration = 0
+    is_image = path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp', '.avif'}
+    info = {'ok': True, 'path': str(path), 'name': path.name, 'uri': path.as_uri(),
+            'kind': 'image' if is_image else 'audio' if is_audio else 'video', 'duration': duration,
+            'width': video.get('width', 0), 'height': video.get('height', 0),
+            'hasAudio': any(s.get('codec_type') == 'audio' for s in data.get('streams', [])),
+            'thumbnail': path.as_uri() if is_image else ''}
+    if is_audio:
+        info.update(sampleRate=(audio or {}).get('sample_rate', ''), channels=(audio or {}).get('channels', 0), waveformSeconds=min(duration, 30))
+    source_folder = VIDEO_DIR / 'Sources' / path.stem
+    info['sourcesFolder'] = str(source_folder.resolve()) if (source_folder / 'capture.mkv').is_file() else ''
+    if thumbnail and not is_image and shutil.which('ffmpeg'):
+        stat = path.stat()
+        key = hashlib.sha256(f'{path}:{stat.st_mtime_ns}:{stat.st_size}'.encode()).hexdigest()
+        cache = Path(os.environ.get('XDG_CACHE_HOME') or HOME / '.cache') / 'oma-bs/thumbnails'
+        cache.mkdir(parents=True, exist_ok=True)
+        suffix = '.wave.png' if is_audio else '.jpg'
+        destination = cache / (key + suffix)
+        if not destination.exists():
+            temp = cache / (key + '-' + uuid.uuid4().hex + suffix)
+            try:
+                command = ['ffmpeg', '-nostdin', '-v', 'error']
+                command += ['-t', '30'] if is_audio else []
+                command += ['-i', str(path)]
+                command += ['-filter_complex', '[0:a:0]aformat=channel_layouts=mono,showwavespic=s=640x120:colors=0xaebfca:scale=sqrt'] if is_audio else ['-vf', 'scale=640:-2']
+                result = subprocess.run(command + ['-frames:v', '1', str(temp)],
+                                        capture_output=True, timeout=15)
+                if result.returncode == 0 and temp.exists():
+                    temp.replace(destination)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                if temp.exists():
+                    temp.unlink()  # only the generated, unique thumbnail temp file
+        if destination.exists():
+            info['thumbnail'] = destination.as_uri()
+    return info
+
+
+def export_video(raw: str, start: float, end: float, mute: bool) -> dict[str, Any]:
+    require('ffmpeg')
+    info = inspect_media(raw, thumbnail=False)
+    duration = info['duration']
+    if info['kind'] != 'video' or duration <= 0:
+        raise RuntimeError('Choose a finished video with a known duration')
+    if (not math.isfinite(start) or not math.isfinite(end)
+            or not 0 <= start < duration or not start < end <= duration + 0.05):
+        raise RuntimeError('Choose a start and end within the video; end must be after start')
+    end = min(end, duration)
+    folder = VIDEO_DIR / 'Exports'
+    folder.mkdir(parents=True, exist_ok=True)
+    source = Path(info['path'])
+    suffix = datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]
+    output = folder / f'{source.stem[:100]}-edit-{suffix}.mp4'
+    temporary = folder / ('.' + output.stem + '.partial.mp4')
+    command = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
+               '-i', str(source), '-ss', str(start), '-t', str(end - start), '-map', '0:v:0',
+               '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p']
+    command += ['-an'] if mute else ['-map', '0:a?', '-c:a', 'aac']
+    command += ['-movflags', '+faststart', str(temporary)]
+    proc = None
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    def terminate_export(_signum, _frame):
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        raise RuntimeError('Export interrupted; original recording is unchanged')
+    signal.signal(signal.SIGTERM, terminate_export)
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _, stderr = proc.communicate(timeout=1800)
+        if proc.returncode or not temporary.exists():
+            raise RuntimeError('Export failed: ' + stderr.decode(errors='replace')[-600:])
+        exported = inspect_media(str(temporary), thumbnail=False)
+        if exported['duration'] <= 0:
+            raise RuntimeError('Export produced an empty video')
+        temporary.replace(output)
+        return {'ok': True, 'message': 'Export saved; original kept', 'path': str(output),
+                'uri': output.as_uri(), 'name': output.name, 'kind': 'video'}
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+        if temporary.exists():
+            temporary.unlink()  # only this export's incomplete generated output
+
+
+def open_path(raw: str) -> dict[str, Any]:
+    path = safe_media_path(raw)
+    launcher = shutil.which("uwsm-app")
+    command = [launcher, "--", "xdg-open", str(path)] if launcher else ["xdg-open", str(path)]
+    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True}
+
+
+def open_folder(kind: str) -> dict[str, Any]:
+    target = VIDEO_DIR if kind == "video" else VIDEO_DIR / 'Sources' if kind == 'audio' else IMAGE_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(["xdg-open", str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True}
+
+
+def open_studio() -> dict[str, Any]:
+    launcher = PLUGIN_DIR / "scripts" / "oma-bs-studio"
+    subprocess.Popen([str(launcher)], start_new_session=True)
+    return {"ok": True, "message": "OMA-BS Studio is starting"}
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="oma-bs")
+    sub = root.add_subparsers(dest="command", required=True)
+    sub.add_parser("status")
+    listing = sub.add_parser("list")
+    listing.add_argument("kind", choices=["video", "image", "audio"])
+    listing.add_argument("--limit", type=int, default=8)
+    listing.add_argument('--thumbnails', action='store_true')
+    for name in ('start', 'start-stream', 'run-session'):
+        starting = sub.add_parser(name)
+        starting.add_argument("--capture", choices=["display", "window", "region"], default="window")
+        starting.add_argument("--audio", choices=["none", "desktop", "microphone", "both"], default="both")
+        starting.add_argument("--webcam", action="store_true")
+        starting.add_argument("--webcam-size", choices=["small", "medium", "large"], default="medium")
+        starting.add_argument('--microphone', default='default_input')
+        starting.add_argument('--camera', default='')
+        starting.add_argument('--fps', type=int, choices=[30, 60], default=60)
+        starting.add_argument('--separate-audio', action='store_true')
+        starting.add_argument('--stream', action='store_true', help=argparse.SUPPRESS)
+        if name == 'run-session':
+            starting.add_argument('--token', required=True)
+            starting.add_argument('--lock-fd', type=int, required=True)
+    sub.add_parser('devices')
+    sub.add_parser('stop-stream')
+    sub.add_parser("stop")
+    sub.add_parser("webcam-off")
+    opening = sub.add_parser("open")
+    opening.add_argument("path")
+    folder = sub.add_parser("folder")
+    folder.add_argument("kind", choices=["video", "image", "audio"])
+    sub.add_parser("studio")
+    inspecting = sub.add_parser('inspect')
+    inspecting.add_argument('path')
+    exporting = sub.add_parser('export')
+    exporting.add_argument('path')
+    exporting.add_argument('--start', type=float, required=True)
+    exporting.add_argument('--end', type=float, required=True)
+    exporting.add_argument('--mute', action='store_true')
+    sub.add_parser('project-load')
+    sub.add_parser('stream-load')
+    sub.add_parser('stream-save')
+    for name in ('project-save', 'render-project'):
+        project = sub.add_parser(name)
+        project.add_argument('--json', required=True)
+        if name == 'render-project':
+            project.add_argument('--draft', action='store_true')
+    return root
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        if args.command == "status": result = status()
+        elif args.command == "list": result = media(args.kind, max(1, min(args.limit, 50)), args.thumbnails)
+        elif args.command == "start": result = start(args)
+        elif args.command == 'start-stream':
+            if capture_session.busy(CONFIG_DIR):
+                state = read_json(STATE_FILE, {})
+                if not state.get('streamCapable') or state.get('phase') != 'recording':
+                    raise RuntimeError('Finish this recording first, then start a new take with Stream.')
+                live_stream.ready_destinations(sys.modules[__name__])
+                result = capture_session.request(sys.modules[__name__], state, 'broadcast-on')
+            else:
+                args.stream = True
+                result = start(args)
+        elif args.command == 'stop-stream':
+            state = read_json(STATE_FILE, {})
+            if capture_session.busy(CONFIG_DIR) and state.get('streamCapable'):
+                result = capture_session.request(sys.modules[__name__], state, 'broadcast-off')
+            else: result = {'ok': True, 'message': 'No native stream is active'}
+        elif args.command == 'devices': result = capture_session.devices()
+        elif args.command == 'run-session': result = capture_session.run(sys.modules[__name__], args)
+        elif args.command == "stop": result = stop()
+        elif args.command == "webcam-off": result = webcam_off()
+        elif args.command == "open": result = open_path(args.path)
+        elif args.command == "folder": result = open_folder(args.kind)
+        elif args.command == "studio": result = open_studio()
+        elif args.command == 'inspect': result = inspect_media(args.path)
+        elif args.command == 'export': result = export_video(args.path, args.start, args.end, args.mute)
+        elif args.command == 'project-load': result = {'ok': True, 'project': read_json(CONFIG_DIR / 'editor-project.json', {})}
+        elif args.command == 'stream-load': result = stream_settings.load(sys.modules[__name__])
+        elif args.command == 'stream-save': result = stream_settings.save(sys.modules[__name__], sys.stdin)
+        elif args.command == 'project-save':
+            project = json.loads(args.json)
+            scene_editor.validate(sys.modules[__name__], project)
+            write_json(CONFIG_DIR / 'editor-project.json', project)
+            result = {'ok': True}
+        elif args.command == 'render-project': result = scene_editor.render(sys.modules[__name__], json.loads(args.json), args.draft)
+        else: raise RuntimeError("Unknown command")
+        print(json.dumps(result, separators=(",", ":")))
+        return 0
+    except Exception as error:
+        notify("OMA-BS", str(error))
+        print(json.dumps({"ok": False, "error": str(error)}, separators=(",", ":")))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

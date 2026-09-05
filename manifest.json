@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "lalo.oma-bs",
+  "name": "OMA-BS Studio",
+  "version": "0.7.1",
+  "author": "Lalo Morales",
+  "description": "Native recording, multistreaming, source audio, media gallery, and editing for Omarchy.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OMA-BS Studio",
+    "description": "Record, stream, preview, and edit without leaving the Omarchy bar.",
+    "category": "Capture",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

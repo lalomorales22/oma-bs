@@ -1,0 +1,41 @@
+name: Verify OMA-BS
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - name: Install native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq
+      - name: Fetch pinned Omarchy validator
+        run: |
+          mkdir -p ../omarchy-upstream/bin
+          curl --fail --location https://raw.githubusercontent.com/basecamp/omarchy/493067741e081c3b09082da6bfd51e99ec24ef00/bin/omarchy-plugin-validate -o ../omarchy-upstream/bin/omarchy-plugin-validate
+          chmod +x ../omarchy-upstream/bin/omarchy-plugin-validate
+      - name: Native tests and manifest validation
+        run: |
+          python3 -m unittest discover -s tests -v
+          node --test tests/*.test.mjs
+          ../omarchy-upstream/bin/omarchy-plugin-validate .
+      - name: Prepare browser runtime outside plugin
+        run: |
+          mkdir -p "$RUNNER_TEMP/oma-bs-studio"
+          cp -R studio/. "$RUNNER_TEMP/oma-bs-studio/"
+          cd "$RUNNER_TEMP/oma-bs-studio"
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build

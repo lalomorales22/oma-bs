@@ -1,0 +1,168 @@
+import path from 'path';
+import os from 'node:os';
+import http from 'node:http';
+import { defineConfig, loadEnv, Plugin, ViteDevServer } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import basicSsl from '@vitejs/plugin-basic-ssl';
+import { WebSocketServer, WebSocket } from 'ws';
+import { nativeStreamSettings } from './native-stream-settings.mjs';
+import { localRequest } from './secure-relay.mjs';
+
+const RELAY_PORT = 4000;
+
+/**
+ * Phone-as-camera support: a tiny same-origin WebRTC signaling relay
+ * (`/phone-signal` WebSocket rooms) plus `/phone-lan-ip` so the QR code can
+ * point at this machine's LAN address. Same-origin means it works over the
+ * HTTPS dev mode (`npm run dev:phone`) with no mixed-content issues.
+ */
+const phoneSignaling = (): Plugin => {
+  const attach = (server: ViteDevServer) => {
+    const rooms = new Map<string, Set<WebSocket>>();
+    const wss = new WebSocketServer({ noServer: true });
+
+    server.httpServer?.on('upgrade', (req, socket, head) => {
+      if (!req.url?.startsWith('/phone-signal')) return;
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const url = new URL(req.url as string, 'http://localhost');
+        const session = url.searchParams.get('session') ?? 'default';
+        if (!rooms.has(session)) rooms.set(session, new Set());
+        const room = rooms.get(session) as Set<WebSocket>;
+        room.add(ws);
+
+        ws.on('message', (data, isBinary) => {
+          room.forEach((peer) => {
+            if (peer !== ws && peer.readyState === WebSocket.OPEN) {
+              peer.send(data, { binary: isBinary });
+            }
+          });
+        });
+        ws.on('close', () => {
+          room.delete(ws);
+          if (room.size === 0) rooms.delete(session);
+        });
+      });
+    });
+
+    server.middlewares.use('/phone-lan-ip', (_req, res) => {
+      let ip = '';
+      for (const list of Object.values(os.networkInterfaces())) {
+        for (const net of list ?? []) {
+          if (net.family === 'IPv4' && !net.internal) {
+            ip = net.address;
+            break;
+          }
+        }
+        if (ip) break;
+      }
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ip }));
+    });
+
+    // ---- Relay proxy: same-origin bridge to the relay on localhost:4000.
+    // Browsers block ws://localhost:4000 from https:// pages (mixed content),
+    // so the page always talks to THIS server and Node pipes the rest.
+    const relayWss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
+    server.httpServer?.on('upgrade', (req, socket, head) => {
+      if (!req.url?.startsWith('/relay-ws')) return;
+      if (!localRequest(req)) { socket.destroy(); return; }
+      relayWss.handleUpgrade(req, socket, head, (client) => {
+        const upstream = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}`);
+        const pendingToUpstream: { data: Buffer; binary: boolean }[] = [];
+
+        upstream.on('open', () => {
+          pendingToUpstream.forEach((m) => upstream.send(m.data, { binary: m.binary }));
+          pendingToUpstream.length = 0;
+        });
+        client.on('message', (data, isBinary) => {
+          const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as Buffer);
+          if (upstream.readyState === WebSocket.OPEN) {
+            if (upstream.bufferedAmount + buf.length > 8 * 1024 * 1024) { client.close(); upstream.close(); return; }
+            upstream.send(buf, { binary: isBinary });
+          }
+          else if (upstream.readyState === WebSocket.CONNECTING) {
+            if (pendingToUpstream.reduce((sum, m) => sum + m.data.length, 0) + buf.length > 8 * 1024 * 1024) { client.close(); upstream.close(); return; }
+            pendingToUpstream.push({ data: buf, binary: isBinary });
+          }
+        });
+        upstream.on('message', (data, isBinary) => {
+          if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+        });
+        upstream.on('error', () => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(
+              JSON.stringify({
+                type: 'status',
+                state: 'error',
+                message: 'Relay not reachable — run "npm run relay" in a separate terminal.',
+              }),
+            );
+          }
+          client.close();
+        });
+        upstream.on('close', () => client.close());
+        client.on('close', () => upstream.close());
+      });
+    });
+
+    server.middlewares.use('/relay-http', (req, res) => {
+      if (!localRequest(req)) { res.writeHead(403); res.end(); return; }
+      const proxyReq = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: RELAY_PORT,
+          path: req.url,
+          method: req.method,
+          headers: req.headers,
+        },
+        (proxyRes) => {
+          res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+          proxyRes.pipe(res);
+        },
+      );
+      proxyReq.on('error', () => {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Relay not reachable — run "npm run relay".' }));
+      });
+      req.pipe(proxyReq);
+    });
+  };
+
+  return { name: 'chromacanvas-phone-signaling', configureServer: attach };
+};
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, '.', '');
+  const useHttps = !!(env.CHROMA_HTTPS || process.env.CHROMA_HTTPS);
+  return {
+    server: {
+      port: 3000,
+      host: useHttps ? '0.0.0.0' : '127.0.0.1',
+    },
+    plugins: [
+      react(),
+      tailwindcss(),
+      phoneSignaling(),
+      { name: 'oma-bs-native-stream-settings', configureServer(server) {
+        server.middlewares.use('/oma-bs-native-streams', nativeStreamSettings(process.env.OMA_BS_STREAM_SETTINGS));
+      } },
+      // `npm run dev:phone` — phones require HTTPS for camera access.
+      ...(useHttps ? [basicSsl()] : []),
+    ],
+    define: {
+      // Optional build-time key. The app also reads a runtime key from
+      // localStorage (Settings modal), which takes precedence.
+      'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY ?? ''),
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY ?? ''),
+    },
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, '.'),
+      },
+    },
+    build: {
+      chunkSizeWarningLimit: 1200,
+    },
+  };
+});
