@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Publish the reviewed archive from Lalo's authenticated desktop using a fresh clone."""
+from pathlib import Path
+import subprocess
+import tempfile
+
+REPO = 'lalomorales22/oma-bs'
+BASE_TREE = 'f0014d76cf2476071719298017ba62abaa390c68'
+
+
+def main():
+    patch = Path(__file__).resolve().parents[1] / 'release/review.patch'
+    if not patch.is_file():
+        raise SystemExit('Run this helper from the downloaded 0.7.2 release archive.')
+    account = subprocess.check_output(['gh', 'api', 'user', '--jq', '.login'], text=True).strip()
+    if account != 'lalomorales22':
+        raise SystemExit('Use gh auth login with lalomorales22 before publishing this review.')
+    downloads = Path.home() / 'Downloads'
+    downloads.mkdir(exist_ok=True)
+    folder = Path(tempfile.mkdtemp(prefix='oma-bs-publish-0.7.2-', dir=downloads)) / 'repo'
+    subprocess.run(['gh', 'repo', 'clone', REPO, str(folder)], check=True)
+    def git(*args):
+        return subprocess.run(['git', '-C', str(folder), *args], check=True)
+    tree = subprocess.check_output(['git', '-C', str(folder), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+    if tree != BASE_TREE:
+        raise SystemExit(f'Repository changed since review; no files pushed. Fresh clone: {folder}')
+    git('apply', '--check', str(patch))
+    git('apply', str(patch))
+    git('config', 'user.name', 'Lalo Morales')
+    git('config', 'user.email', '146933685+lalomorales22@users.noreply.github.com')
+    git('add', '--all')
+    git('commit', '-m', 'fix: harden OMA-BS capture and streaming for 0.7.2')
+    git('push', 'origin', 'HEAD:main')
+    print('Review published: https://github.com/' + REPO)
+    print('Check the new Actions run before marketplace submission.')
+    print('Checkout retained: ' + str(folder))
+
+
+if __name__ == '__main__':
+    main()

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { Icons } from '../Icon';
-import { uid } from '../../utils/id';
 
 /**
  * Desktop side of "Phone as Camera": shows a QR code, answers the phone's
@@ -22,9 +21,11 @@ export const PhoneCameraModal: React.FC<Props> = ({ onClose, onAddStream }) => {
   const [phoneUrl, setPhoneUrl] = useState<string>('');
   const [status, setStatus] = useState<'waiting' | 'connecting' | 'connected' | 'error'>('waiting');
   const [error, setError] = useState('');
-  const sessionRef = useRef(uid().slice(0, 8));
+  const sessionRef = useRef(crypto.randomUUID());
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const addedRef = useRef(false);
+  const callbacks = useRef({onClose, onAddStream});
+  callbacks.current = {onClose, onAddStream};
 
   const isSecure = location.protocol === 'https:';
 
@@ -46,7 +47,7 @@ export const PhoneCameraModal: React.FC<Props> = ({ onClose, onAddStream }) => {
       const url = `${location.protocol}//${host}${location.port ? `:${location.port}` : ''}/#phone=${session}`;
       setPhoneUrl(url);
       setQr(await QRCode.toDataURL(url, { width: 240, margin: 1, color: { dark: '#0f0f11', light: '#ffffff' } }));
-
+      if (closed) return;
       ws = new WebSocket(wsUrl(session));
       ws.onerror = () => {
         if (!closed) {
@@ -58,21 +59,23 @@ export const PhoneCameraModal: React.FC<Props> = ({ onClose, onAddStream }) => {
         try {
           const msg = JSON.parse(String(event.data));
           if (msg.type === 'offer') {
+            if (addedRef.current) return;
+            pcRef.current?.close();
             setStatus('connecting');
             const pc = new RTCPeerConnection({
               iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
             });
             pcRef.current = pc;
             pc.onicecandidate = (e) => {
-              if (e.candidate) ws?.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+              if (e.candidate && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
             };
             pc.ontrack = (e) => {
               const stream = e.streams[0];
               if (stream && !addedRef.current && stream.getVideoTracks().length) {
                 addedRef.current = true;
                 setStatus('connected');
-                onAddStream(stream, () => pc.close());
-                window.setTimeout(onClose, 900);
+                callbacks.current.onAddStream(stream, () => pc.close());
+                window.setTimeout(() => { if (!closed) callbacks.current.onClose(); }, 900);
               }
             };
             pc.onconnectionstatechange = () => {
@@ -84,7 +87,7 @@ export const PhoneCameraModal: React.FC<Props> = ({ onClose, onAddStream }) => {
             await pc.setRemoteDescription(msg.sdp);
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            ws?.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
+            if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
           } else if (msg.type === 'ice' && pcRef.current) {
             await pcRef.current.addIceCandidate(msg.candidate).catch(() => {});
           }
@@ -92,7 +95,7 @@ export const PhoneCameraModal: React.FC<Props> = ({ onClose, onAddStream }) => {
           /* ignore malformed frames */
         }
       };
-    })();
+    })().catch(() => { if (!closed) { setStatus('error'); setError('Could not prepare phone pairing.'); } });
 
     return () => {
       closed = true;
@@ -100,7 +103,7 @@ export const PhoneCameraModal: React.FC<Props> = ({ onClose, onAddStream }) => {
       // Don't close the pc here — once the source is added it must stay alive.
       if (!addedRef.current) pcRef.current?.close();
     };
-  }, [onClose, onAddStream]);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4">

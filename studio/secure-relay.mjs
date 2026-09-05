@@ -73,7 +73,7 @@ export function createRelay(destinations, send) {
     for (const [index, spec] of specs.entries()) {
       const path = join(folder, `${index}.ffpreset`);
       writeFileSync(path, spec.preset, {mode:0o600,flag:'wx'});
-      const args = ['-nostdin','-v','error','-stats_period','0.5','-progress','pipe:1','-f','mpegts','-i','pipe:0',
+      const args = ['-nostdin','-v','error','-stats_period','0.5','-progress','pipe:1','-protocol_whitelist','pipe','-f','mpegts','-i','pipe:0',
         '-map','0:v:0','-map','0:a?','-c','copy','-rw_timeout','8000000','-rtmp_live','live','-fpre',path];
       if (spec.tls) args.push('-tls_verify','1');
       const child = spawn('ffmpeg', [...args,'-f','flv',spec.endpoint], {stdio:['pipe','pipe','ignore']});
@@ -102,7 +102,7 @@ export function createRelay(destinations, send) {
         child.stdin.write(data);
       };
     }
-    encoder = spawn('ffmpeg', ['-nostdin','-v','error','-i','pipe:0','-map','0:v:0','-map','0:a?',
+    encoder = spawn('ffmpeg', ['-nostdin','-v','error','-protocol_whitelist','pipe','-f','matroska','-i','pipe:0','-map','0:v:0','-map','0:a?',
       '-c:v','libx264','-threads','2','-preset','ultrafast','-tune','zerolatency','-maxrate','4000k','-bufsize','8000k',
       '-g','60','-c:a','aac','-b:a','160k','-ar','48000','-f','mpegts','pipe:1'], {stdio:['pipe','pipe','ignore']});
     encoder.stdout.on('data', data => { for (const w of workers) w.push(data); });

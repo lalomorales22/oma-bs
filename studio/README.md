@@ -68,8 +68,17 @@ for phone-camera pairing. Do not port-forward it or treat it as an internet-faci
 production service. Native-key and stream-relay routes remain local-only. Use a
 local URL for the desktop control page and the generated LAN URL for the phone.
 Optional third-party chat/AI integrations are experimental; service availability
-and pricing may change. API keys configured in the browser or build are visible
-to the client.
+and pricing may change. Enter optional API keys explicitly in Settings; these
+remain visible to the client. Environment API keys are never embedded in builds.
+
+Browser streaming mixes the inputs present at start into one audio track. Stop
+and restart to change that input set. A relay failure leaves the local archive
+running until you stop it. Browser takes accumulate in memory before saving;
+use native capture for long recordings and download important browser takes.
+Phone pairing uses a full random token with one desktop and one phone per room.
+The phone has a Stop camera & mic control; flipping cameras replaces the video
+track without restarting pairing. Actual mobile camera behavior still requires
+device testing. See the root security review for the tested boundaries.
 
 See root [README](../README.md), [license](../LICENSE), and
 [notices](../THIRD-PARTY-NOTICES.md). Old planning notes in this directory are

@@ -125,6 +125,7 @@ const wss = new WebSocketServer({ server: httpServer, maxPayload: 8 * 1024 * 102
   verifyClient: ({ req }) => localRequest(req) });
 
 wss.on('connection', (ws) => {
+  ws.on('error', () => {}); // Rejecting an oversized frame must not crash the relay.
   console.log('Client connected');
 
   let ffmpeg = null;

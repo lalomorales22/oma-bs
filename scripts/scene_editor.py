@@ -77,7 +77,7 @@ def render(backend, project, draft=False):
     for track in tracks:
         if track['kind'] == 'image':
             command += ['-loop', '1', '-framerate', '30']
-        command += ['-i', track['path']]
+        command += backend.LOCAL_INPUT_OPTIONS + ['-i', track['path']]
     filters, audio_labels = [], []
     canvas = 'v0'
     for index, track in enumerate(tracks):

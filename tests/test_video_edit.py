@@ -83,3 +83,19 @@ class VideoEditTests(unittest.TestCase):
         folder.mkdir()
         (folder / '.pending.partial.mp4').write_bytes(b'partial')
         self.assertEqual([item['name'] for item in self.backend.media('video', 50)['items']], [self.source.name])
+
+    def test_concurrent_export_cannot_overwrite_an_existing_file(self):
+        popen = self.backend.subprocess.Popen
+        existing = []
+        def collision(command, **kwargs):
+            if command[0] == 'ffmpeg':
+                partial = Path(command[-1])
+                output = partial.with_name(partial.name[1:].replace('.partial.mp4', '.mp4'))
+                output.write_bytes(b'another export must survive')
+                existing.append(output)
+            return popen(command, **kwargs)
+        with mock.patch.object(self.backend.subprocess, 'Popen', side_effect=collision):
+            with self.assertRaises(FileExistsError):
+                self.backend.export_video(str(self.source), 0, 1, False)
+        self.assertEqual(existing[0].read_bytes(), b'another export must survive')
+        self.assert_original_kept()

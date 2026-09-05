@@ -28,8 +28,8 @@ def validate(data):
         if platform not in PLATFORMS or not isinstance(item.get('enabled'), bool):
             raise RuntimeError(label + ': choose a platform and enable state')
         url, key = item.get('url', ''), item.get('key', '')
-        if not isinstance(url, str) or not isinstance(key, str) or len(url) > 2048 or len(key) > 2048:
-            raise RuntimeError(label + ': URL or key is too long')
+        if not isinstance(url, str) or not isinstance(key, str) or len(url) > 900 or len(key) > 900:
+            raise RuntimeError(label + ': URL and key must each be at most 900 characters')
         url, key = url.strip(), key.strip()
         # Keep existing profile restrictions compatible with earlier releases.
         # Relay credentials now travel through private FFmpeg presets.

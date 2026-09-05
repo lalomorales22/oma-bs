@@ -5,7 +5,12 @@ capture stack Omarchy already trusts. It turns screen recording into a two-click
 flow, with a native gallery and basic video editing. The advanced browser studio
 is adapted from Chroma Canvas and branded OMA-BS.
 
-## v0.7.1 panel polish and native streaming
+## v0.7.2 security and capture repairs
+
+See [security review](docs/SECURITY-REVIEW-0.7.2.md) for fixes, validation, and
+remaining device checks. See [changelog](CHANGELOG-0.7.2.md) for this update.
+
+## Features
 
 - Native top-bar widget and themed popup panel
 - Outlined controls and padded cards; matching oval Record and Stream buttons
@@ -188,7 +193,7 @@ the plugin. Never copy node_modules into the plugin folder.
 
 Omarchy watches the plugin folder, but QML can remain cached after updates. Save
 edits, finish captures/exports, close the browser studio, stop any manually launched
-relay, and run `omarchy-restart-shell`. Confirm version 0.7.1 in the popup. If it
+relay, and run `omarchy-restart-shell`. Confirm version 0.7.2 in the popup. If it
 is missing, inspect `qs log -p "$OMARCHY_PATH/shell" --tail 100` for `lalo.oma-bs`
 errors and validate the installed folder with `omarchy plugin validate`.
 

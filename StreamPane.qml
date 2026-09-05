@@ -144,7 +144,7 @@ Item {
         anchors.fill: parent; anchors.margins: Style.space(8)
         text: field.value; color: root.foreground; font.pixelSize: Style.font.bodySmall
         echoMode: field.secret ? TextInput.Password : TextInput.Normal
-        maximumLength: 2048; clip: true; selectByMouse: true; activeFocusOnTab: true
+        maximumLength: 900; clip: true; selectByMouse: true; activeFocusOnTab: true
         onEditingFinished: { field.edited(text); text = Qt.binding(function() { return field.value }) }
       }
       Text { anchors.fill: input; text: field.placeholder; visible: input.text === ""; color: root.foreground; opacity: 0.4; font.pixelSize: Style.font.caption; elide: Text.ElideRight }

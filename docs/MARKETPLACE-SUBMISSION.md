@@ -1,7 +1,8 @@
 # Prepared marketplace submission
 
-Status: draft, not submitted. Publish the repository and complete the hardware
-checks in [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) before sending this form.
+Status: draft, not submitted. The public repository exists and its initial CI
+passed. Publish the reviewed update and complete the hardware checks in
+[RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) before sending this form.
 
 The official route is the marketplace's **Submit plugin issue form**, followed
 by automated validation of the public repository and maintainer review. It is
@@ -13,7 +14,6 @@ not a pull request to the main Omarchy operating-system repository.
 ## Form fields
 
 **Repository URL:** `https://github.com/lalomorales22/oma-bs`
-(intended destination; ensure this exact public repository exists first)
 
 **Category:** Productivity
 
@@ -27,7 +27,7 @@ overlay; an inline video/image/audio gallery; basic layered editing; and
 multi-destination RTMP(S) streaming. The optional browser studio provides
 additional editing and scene tools adapted from my Chroma Canvas application.
 
-The root manifest declares `lalo.oma-bs`, version `0.7.1`, kind `bar-widget`,
+The root manifest declares `lalo.oma-bs`, version `0.7.2`, kind `bar-widget`,
 entry point `BarWidget.qml`, default section `right`. Native capture depends on
 the installed Omarchy helpers, GPU Screen Recorder, FFmpeg/ffprobe, and mpv.
 Qt Multimedia is optional for inline playback. The browser studio additionally
@@ -62,3 +62,7 @@ Review these against the live form; do not pre-check pending work:
 - [ ] Understand that marketplace approval is not a security audit.
 - [ ] Attach a real screenshot of the widget, editor, and Stream tab if desired;
       hide all stream keys and account-specific ingest URLs.
+
+The September 5 review maps the current guide and issue form to repository files
+in [SECURITY-REVIEW-0.7.2.md](SECURITY-REVIEW-0.7.2.md). Owner confirmations and
+real-device checks remain explicit; no marketplace approval is claimed.

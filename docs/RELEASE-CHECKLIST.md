@@ -13,13 +13,13 @@ plugin tree: `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`.
 The root GitHub workflow does this automatically in an external runtime copy.
 QML syntax must parse, but syntax and unit tests cannot replace a real shell run.
 
-## Real Omarchy device — before publication
+## Real Omarchy device — before marketplace submission
 
 - [ ] Record Omarchy/Quickshell, GPU/driver, GPU Screen Recorder, FFmpeg, and Qt
       versions in the release notes; this targets Quattro, not the old Waybar API.
 - [ ] Save edits, finish captures/exports, close the browser studio, and stop any
       manually launched browser relay before updating. Restart the shell after.
-- [ ] Confirm **OMA-BS · 0.7.1**, five dock tabs, visible footer, and oval
+- [ ] Confirm **OMA-BS · 0.7.2**, five dock tabs, visible footer, and oval
       Stream button beside Record. Check the popup on a smaller/scaled display.
 - [ ] Make a normal display, region, and window take. Test silent, desktop,
       microphone, and both inputs; inspect the saved MP4 and separate audio.
@@ -50,22 +50,19 @@ QML syntax must parse, but syntax and unit tests cannot replace a real shell run
 
 ## GitHub preparation
 
-Review the included MIT license and ownership notices. Choose the public repo
-name `lalomorales22/oma-bs` or update README/submission URLs to the final name.
-Create an empty repository, then from the reviewed source folder:
+The public repository is `lalomorales22/oma-bs`. Its initial CI passed. The 0.7.2
+archive includes a guarded publishing helper for the owner's authenticated `gh`:
 
 ```bash
-git init -b main  # only for an extracted archive without .git
-git add .
-git commit -m "Release OMA-BS 0.7.1"
-git remote add origin https://github.com/lalomorales22/oma-bs.git
-git push -u origin main
+python3 scripts/publish-review
 ```
 
-For an existing checkout, use its current branch/history and remote instead.
+It uses a fresh clone, requires the reviewed baseline tree, applies the bundled
+patch, and pushes normally (never force-pushes). It stops if the repository has
+changed. This helper is archive-only; regular checkouts use their usual Git flow.
 Never stage private runtime/config files, dependency trees, recordings, or keys.
-Wait for CI, add a real redacted screenshot, then create tag `v0.7.1` and a GitHub
-release with CHANGELOG-0.7.1.md. Source archives need prefix `oma-bs/` and must
+Wait for CI, add a real redacted screenshot, then create tag `v0.7.2` and a GitHub
+release with CHANGELOG-0.7.2.md. Source archives need prefix `oma-bs/` and must
 exclude node_modules, caches, and internal symlinks. Validate the extracted copy.
 
 ## Marketplace

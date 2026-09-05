@@ -41,7 +41,8 @@ class StreamSettingsTests(unittest.TestCase):
         original = self.module.path_for(self.backend).read_bytes()
         cases = [('url', 'https://example.test/live'), ('url', 'rtmps://user:pass@example.test/app'),
                  ('url', 'rtmps://example.test:bad/app'), ('url', 'rtmps://example.test/app|other'),
-                 ('key', 'SECRET\nINJECTED'), ('key', 'SECRET[f=flv]'), ('key', 'SECRET\\escape')]
+                 ('key', 'SECRET\nINJECTED'), ('key', 'SECRET[f=flv]'), ('key', 'SECRET\\escape'),
+                 ('key', 'x' * 901), ('url', 'rtmps://example.test/' + 'x' * 900)]
         for field, value in cases:
             data = json.loads(json.dumps(self.data))
             data['destinations'][0][field] = value

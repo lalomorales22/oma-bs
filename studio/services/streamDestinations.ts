@@ -27,25 +27,25 @@ export const PLATFORM_PRESETS: PlatformPreset[] = [
   {
     id: 'twitch',
     label: 'Twitch',
-    url: 'rtmp://live.twitch.tv/app',
+    url: '',
     keyHint: 'Creator Dashboard → Settings → Stream',
   },
   {
     id: 'youtube',
     label: 'YouTube',
-    url: 'rtmp://a.rtmp.youtube.com/live2',
+    url: '',
     keyHint: 'YouTube Studio → Go Live → Stream key',
   },
   {
     id: 'kick',
     label: 'Kick',
-    url: 'rtmps://fa723fc1b171.global-contribute.live-video.net/app',
+    url: '',
     keyHint: 'Creator Dashboard → Settings → Stream Key',
   },
   {
     id: 'x',
     label: 'X (Twitter)',
-    url: 'rtmp://va.pscp.tv:80/x',
+    url: '',
     keyHint: 'X Media Studio → Producer → Create broadcast',
   },
   {
@@ -75,12 +75,22 @@ export const createDestination = (platform: PlatformId = 'twitch'): StreamDestin
 
 const STORAGE_KEY = 'chromacanvas.stream-destinations';
 
+const validDestination = (d: unknown): d is StreamDestination => {
+  if (!d || typeof d !== 'object') return false;
+  const value = d as StreamDestination;
+  return typeof value.id === 'string' && value.id.length <= 128
+    && PLATFORM_PRESETS.some(p => p.id === value.platform)
+    && typeof value.url === 'string' && value.url.length <= 900
+    && typeof value.key === 'string' && value.key.length <= 900
+    && typeof value.enabled === 'boolean';
+};
+
 export const loadDestinations = (): StreamDestination[] => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as StreamDestination[];
-      if (Array.isArray(parsed) && parsed.length) return parsed;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length <= 16 && parsed.every(validDestination)) return parsed;
     }
   } catch {
     /* corrupted or unavailable storage */
@@ -106,9 +116,7 @@ export const loadNativeDestinations = async (): Promise<StreamDestination[]> => 
   if (!response.ok) throw new Error('Save destinations in the native Stream tab and open the studio through OMA-BS.');
   const data = await response.json();
   if (data.version !== 1 || !Array.isArray(data.destinations) || data.destinations.length > 16
-      || !data.destinations.every((d: StreamDestination) => d && typeof d.id === 'string'
-        && PLATFORM_PRESETS.some(p => p.id === d.platform) && typeof d.url === 'string'
-        && typeof d.key === 'string' && typeof d.enabled === 'boolean')) {
+      || !data.destinations.every(validDestination)) {
     throw new Error('Saved destinations could not be read. Save them again in OMA-BS.');
   }
   return data.destinations;

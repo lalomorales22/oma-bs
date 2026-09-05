@@ -10,7 +10,7 @@ interface Props {
   session: string;
 }
 
-type Status = 'starting' | 'insecure' | 'camera-denied' | 'connecting' | 'live' | 'error';
+type Status = 'starting' | 'insecure' | 'camera-denied' | 'connecting' | 'live' | 'error' | 'stopped';
 
 export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -19,10 +19,14 @@ export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
   const [facing, setFacing] = useState<'environment' | 'user'>('environment');
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const flipping = useRef(false);
 
   useEffect(() => {
+    if (!enabled) { setStatus('stopped'); return; }
     let ws: WebSocket | null = null;
     let cancelled = false;
+    let disconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
     const start = async () => {
       // On http:// pages phones don't even expose navigator.mediaDevices —
@@ -54,20 +58,34 @@ export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
         stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
         pc.onicecandidate = (e) => {
-          if (e.candidate) ws?.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+          if (e.candidate && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
         };
         pc.onconnectionstatechange = () => {
+          clearTimeout(disconnectTimer);
+          if (pc.connectionState === 'disconnected') {
+            disconnectTimer = setTimeout(() => {
+              stream.getTracks().forEach(t => t.stop());
+              pc.close(); ws?.close();
+              if (!cancelled) { setStatus('error'); setDetail('Desktop disconnected. Camera and microphone stopped.'); }
+            }, 5000);
+          }
           if (pc.connectionState === 'connected') setStatus('live');
           if (pc.connectionState === 'failed') {
+            stream.getTracks().forEach(t => t.stop());
             setStatus('error');
             setDetail('Connection failed — are both devices on the same Wi-Fi?');
           }
         };
 
         ws.onopen = async () => {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          ws?.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
+          try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
+          } catch {
+            stream.getTracks().forEach(t => t.stop()); pc.close(); ws?.close();
+            if (!cancelled) { setStatus('error'); setDetail('Phone pairing ended. Scan a new QR code.'); }
+          }
         };
         ws.onmessage = async (event) => {
           try {
@@ -79,10 +97,15 @@ export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
           }
         };
         ws.onerror = () => {
+          stream.getTracks().forEach(t => t.stop());
+          pc.close();
           setStatus('error');
           setDetail('Could not reach the desktop — keep the OMA-BS dev server running.');
         };
       } catch (e) {
+        streamRef.current?.getTracks().forEach(t => t.stop());
+        pcRef.current?.close(); ws?.close();
+        if (cancelled) return;
         setStatus('camera-denied');
         setDetail(
           e instanceof Error && /NotAllowed/i.test(e.name)
@@ -95,11 +118,35 @@ export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
     void start();
     return () => {
       cancelled = true;
+      clearTimeout(disconnectTimer);
       ws?.close();
       pcRef.current?.close();
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, [session, facing]);
+  }, [session, enabled]);
+
+  const flipCamera = async () => {
+    if (flipping.current || !enabled || !streamRef.current) return;
+    flipping.current = true;
+    const next = facing === 'environment' ? 'user' : 'environment';
+    let fresh: MediaStream | null = null;
+    try {
+      fresh = await navigator.mediaDevices.getUserMedia({video:{facingMode:next},audio:false});
+      const old = streamRef.current;
+      const sender = pcRef.current?.getSenders().find(s => s.track?.kind === 'video');
+      if (!old || !sender || pcRef.current?.connectionState === 'closed') throw new Error('Camera connection ended');
+      const track = fresh.getVideoTracks()[0];
+      await sender.replaceTrack(track);
+      if ((pcRef.current as RTCPeerConnection | null)?.connectionState === 'closed') throw new Error('Camera connection ended');
+      old.getVideoTracks().forEach(t => { t.stop(); old.removeTrack(t); });
+      old.addTrack(track);
+      if (videoRef.current) videoRef.current.srcObject = old;
+      setFacing(next);
+    } catch {
+      fresh?.getTracks().forEach(t => t.stop());
+      setDetail('Could not switch cameras.');
+    } finally { flipping.current = false; }
+  };
 
   const STATUS_TEXT: Record<Status, string> = {
     starting: 'Starting camera…',
@@ -108,6 +155,7 @@ export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
     connecting: 'Connecting to your desktop…',
     live: '🔴 LIVE — streaming to OMA-BS',
     error: detail,
+    stopped: 'Camera and microphone stopped. Scan a new pairing QR to reconnect.',
   };
 
   if (status === 'insecure') {
@@ -159,11 +207,13 @@ export const PhoneCameraPage: React.FC<Props> = ({ session }) => {
         </p>
         <div className="flex gap-3 justify-center">
           <button
-            onClick={() => setFacing((f) => (f === 'environment' ? 'user' : 'environment'))}
+            disabled={!enabled || status !== 'live'}
+            onClick={() => void flipCamera()}
             className="px-5 py-3 bg-zinc-900 border border-zinc-700 rounded-full text-sm font-bold"
           >
             🔄 Flip Camera
           </button>
+          {enabled && <button onClick={() => setEnabled(false)} className="px-5 py-3 bg-zinc-900 border border-zinc-700 rounded-full text-sm font-bold">Stop camera &amp; mic</button>}
           {(status === 'error' || status === 'camera-denied') && (
             <button
               onClick={() => location.reload()}

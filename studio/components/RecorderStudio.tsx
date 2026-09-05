@@ -18,6 +18,8 @@ import { ChatDock } from './Recorder/ChatDock';
 import { PhoneCameraModal } from './Recorder/PhoneCameraModal';
 import { SmartZoomController, createSmartZoomStream } from './Recorder/smartZoom';
 import { relayWsUrl } from '../utils/relay';
+import { streamUpload } from '../services/streamUpload';
+import { streamAudio } from '../services/streamAudio';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
@@ -136,7 +138,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
 
     const changeDestinationPlatform = (id: string, platform: PlatformId) => {
         setDestinations(prev =>
-            prev.map(d => (d.id === id ? { ...d, platform, url: presetFor(platform).url } : d)),
+            prev.map(d => (d.id === id ? { ...d, platform, url: presetFor(platform).url, key: '' } : d)),
         );
     };
     const [recordingTime, setRecordingTime] = useState(0);
@@ -180,12 +182,46 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
     const mediaRecordersRef = useRef<Map<string, MediaRecorder>>(new Map());
     const stoppingRecordingRef = useRef(false);
     const recordedChunksRef = useRef<Map<string, Blob[]>>(new Map());
+    const recordedSourcesRef = useRef<Map<string, {name: string; type: ActiveStream['type']; started: number}>>(new Map());
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const streamRecorderRef = useRef<MediaRecorder | null>(null);
     const streamChunksRef = useRef<Blob[]>([]);
     const wsRef = useRef<WebSocket | null>(null);
 
     const containerRef = useRef<HTMLDivElement>(null);
+    const streamsRef = useRef(streams);
+    streamsRef.current = streams;
+    const mountedRef = useRef(true);
+    const streamCleanupRef = useRef<(() => void) | null>(null);
+    const layoutLoadedRef = useRef(false);
+    const acquireUserMedia = async (constraints: MediaStreamConstraints) => {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); throw new Error('Studio closed'); }
+        return stream;
+    };
+    const acquireDisplayMedia = async (constraints: DisplayMediaStreamOptions) => {
+        const stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+        if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); throw new Error('Studio closed'); }
+        return stream;
+    };
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            if (timerRef.current) clearInterval(timerRef.current);
+            streamCleanupRef.current?.();
+            wsRef.current?.close();
+            for (const recorder of mediaRecordersRef.current.values()) if (recorder.state !== 'inactive') recorder.stop();
+            if (streamRecorderRef.current?.state !== 'inactive') streamRecorderRef.current?.stop();
+            streamsRef.current.forEach(s => {
+                s.stream.getTracks().forEach(t => t.stop());
+                s.originalStream?.getTracks().forEach(t => t.stop());
+            });
+            chromaProcessors.current.forEach(p => p.stop());
+            zoomControllers.current.forEach(p => p.controller.stop());
+            sourceCleanups.current.forEach(stop => stop());
+        };
+    }, []);
     
     // Profile State
     const [profiles, setProfiles] = useState<Record<string, ActiveStream[]>>({});
@@ -214,19 +250,23 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
         
         const savedProfiles = localStorage.getItem('chroma_studio_profiles');
         if (savedProfiles) {
-            setProfiles(JSON.parse(savedProfiles));
+            try {
+                const parsed = JSON.parse(savedProfiles);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) setProfiles(parsed);
+            } catch { /* Ignore corrupt saved profiles. */ }
         }
     }, []);
 
     // Save layout on change
     useEffect(() => {
-        if (streams.length > 0) {
+        if (!layoutLoadedRef.current) { layoutLoadedRef.current = true; return; }
+        {
             const serializable = streams.map(s => ({
                 ...s,
                 stream: undefined,
                 originalStream: undefined
             }));
-            localStorage.setItem('chroma_studio_layout', JSON.stringify(serializable));
+            try { localStorage.setItem('chroma_studio_layout', JSON.stringify(serializable)); } catch { /* Storage can be full. */ }
         }
     }, [streams]);
 
@@ -244,8 +284,10 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
     };
 
     const loadProfile = (name: string) => {
+        if (isRecording || isStreaming) return;
         const p = profiles[name];
-        if (p) {
+        if (Array.isArray(p)) {
+             streamsRef.current.forEach(s => removeStream(s.id));
              const restored = p.map((s: any) => ({
                     ...s,
                     stream: new MediaStream(),
@@ -255,9 +297,12 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
             // Reconnect logic similar to initial load...
              restored.forEach((s: ActiveStream) => {
                     if (s.type === 'CAMERA' && s.deviceId) {
-                        navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: s.deviceId } } })
+                        acquireUserMedia({ video: { deviceId: { exact: s.deviceId } } })
                             .then(stream => {
-                                setStreams(prev => prev.map(p => p.id === s.id ? { ...p, stream, originalStream: stream } : p));
+                                setStreams(prev => {
+                                    if (!prev.some(p => p.id === s.id)) { stream.getTracks().forEach(t => t.stop()); return prev; }
+                                    return prev.map(p => p.id === s.id ? { ...p, stream, originalStream: stream } : p);
+                                });
                             })
                             .catch(e => console.warn("Could not restore camera", e));
                     }
@@ -279,6 +324,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                 console.error("Error fetching devices:", e);
             }
         };
+        if (!navigator.mediaDevices) return;
         getDevices();
         navigator.mediaDevices.addEventListener('devicechange', getDevices);
         return () => navigator.mediaDevices.removeEventListener('devicechange', getDevices);
@@ -329,7 +375,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                 return;
             }
 
-            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+            const stream = await acquireDisplayMedia({ video: true, audio: true });
             const id = Math.random().toString(36).substr(2, 9);
             const track = stream.getVideoTracks()[0];
             
@@ -369,7 +415,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                 video: deviceId ? { deviceId: { exact: deviceId } } : true,
                 audio: false
             };
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            const stream = await acquireUserMedia(constraints);
             const id = Math.random().toString(36).substr(2, 9);
             
             const track = stream.getVideoTracks()[0];
@@ -395,7 +441,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
 
     const addMicrophone = async (x: number, y: number, deviceId?: string) => {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
+            const stream = await acquireUserMedia({
                 audio: { deviceId: deviceId || (selectedAudioDevice ? { exact: selectedAudioDevice } : undefined) },
                 video: false 
             });
@@ -596,13 +642,13 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
             let newName = existingStream.name;
 
             if (existingStream.type === 'CAMERA') {
-                 newStream = await navigator.mediaDevices.getUserMedia({ 
+                 newStream = await acquireUserMedia({
                      video: { deviceId: { exact: deviceId } }, 
                      audio: false 
                  });
                  newName = newStream.getVideoTracks()[0].label;
             } else if (existingStream.type === 'AUDIO') {
-                 newStream = await navigator.mediaDevices.getUserMedia({ 
+                 newStream = await acquireUserMedia({
                      audio: { deviceId: { exact: deviceId } }, 
                      video: false 
                  });
@@ -611,7 +657,9 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                 return; 
             }
 
-            setStreams(prev => prev.map(s => s.id === streamId ? {
+            setStreams(prev => {
+                if (!prev.some(s => s.id === streamId)) { newStream.getTracks().forEach(t => t.stop()); return prev; }
+                return prev.map(s => s.id === streamId ? {
                 ...s,
                 stream: newStream,
                 originalStream: newStream,
@@ -619,7 +667,8 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                 deviceId: deviceId,
                 chromaKey: false,
                 muted: false
-            } : s));
+                } : s);
+            });
 
         } catch (e) {
             console.error("Failed to switch source", e);
@@ -656,7 +705,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
     };
 
     const releaseInputs = () => {
-        streams.filter(s => s.type === 'CAMERA' || s.type === 'AUDIO').forEach(s => {
+        streamsRef.current.filter(s => s.type === 'CAMERA' || s.type === 'AUDIO').forEach(s => {
             // Release hardware immediately, even if saving navigates away before
             // React processes the source-list update.
             s.stream.getTracks().forEach(track => track.stop());
@@ -686,11 +735,12 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
     // --- Recording Logic ---
 
     const startRecording = () => {
-        if (stoppingRecordingRef.current) return;
+        if (stoppingRecordingRef.current || isRecording || streamRecorderRef.current) return;
         if (streams.length === 0) return;
 
         mediaRecordersRef.current.clear();
         recordedChunksRef.current.clear();
+        recordedSourcesRef.current.clear();
 
         streams.forEach(s => {
             let streamToRecord = s.stream;
@@ -761,6 +811,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
 
                 recorder.start(1000); 
                 mediaRecordersRef.current.set(s.id, recorder);
+                recordedSourcesRef.current.set(s.id, {name:s.name, type:s.type, started:performance.now()});
             } catch (e) {
                 console.error(`Failed to record stream ${s.id} (${s.name})`, e);
             }
@@ -780,20 +831,20 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
         if (stoppingRecordingRef.current) return;
         stoppingRecordingRef.current = true;
         if (timerRef.current) clearInterval(timerRef.current);
-        setIsRecording(false);
 
         const newLibraryItems: LibraryItem[] = [];
         const promises = Array.from(mediaRecordersRef.current.entries()).map(([id, recorder]) => {
             return new Promise<void>(resolve => {
                 const collect = () => {
                     const chunks = recordedChunksRef.current.get(id) || [];
-                    const streamInfo = streams.find(s => s.id === id);
+                    const streamInfo = recordedSourcesRef.current.get(id);
                     if (!streamInfo) { resolve(); return; }
 
                     const type = streamInfo.type === 'AUDIO' ? 'audio/webm' : 'video/webm';
                     // We try to use the mimeType the recorder was initialized with if available, 
                     // otherwise default blob type
                     const blob = new Blob(chunks, { type: recorder.mimeType || type });
+                    if (!blob.size) { resolve(); return; }
                     const url = URL.createObjectURL(blob);
                     
                     newLibraryItems.push({
@@ -802,7 +853,7 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                         src: url,
                         name: `Rec ${streamInfo.name}`,
                         category: streamInfo.type === 'AUDIO' ? 'AUDIO' : 'VIDEO',
-                        duration: recordingTime
+                        duration: (performance.now() - streamInfo.started) / 1000
                     });
                     resolve();
                 };
@@ -818,17 +869,24 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
         } finally {
             mediaRecordersRef.current.clear();
             recordedChunksRef.current.clear();
+            recordedSourcesRef.current.clear();
             if (!isStreaming) {
                 releaseInputs();
             }
             stoppingRecordingRef.current = false;
+            if (mountedRef.current) setIsRecording(false);
         }
     };
 
     // --- Streaming Logic (Compositor + WebSocket) ---
 
     const startStreaming = () => {
+        if (streamRecorderRef.current || stoppingRecordingRef.current || isRecording) return;
         const targets = readyDestinations(destinations);
+        if (targets.length !== destinations.filter(d => d.enabled).length) {
+            toast('Complete every enabled destination, or disable the unfinished ones.', 'error');
+            return;
+        }
         if (targets.length === 0) {
             toast('Enable at least one destination with a server URL and stream key.', 'error');
             return;
@@ -860,11 +918,12 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
             const scaleX = canvas.width / containerWidth;
             const scaleY = canvas.height / containerHeight;
 
-            streams.forEach(s => {
+            streamsRef.current.forEach(s => {
                 if (s.type === 'AUDIO') return;
                 const element = document.getElementById(`source-${s.id}`) as HTMLVideoElement | HTMLCanvasElement;
-                if (element) {
-                    ctx.drawImage(element, s.x * scaleX, s.y * scaleY, s.width * scaleX, s.height * scaleY);
+                if (element && containerWidth > 0 && containerHeight > 0) {
+                    try { ctx.drawImage(element, s.x * scaleX, s.y * scaleY, s.width * scaleX, s.height * scaleY); }
+                    catch { /* Source may not have its first frame yet. */ }
                 }
             });
 
@@ -874,14 +933,36 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
 
         // Capture Master Stream
         const masterStream = canvas.captureStream(30);
-        streams.forEach(s => {
-             s.stream.getAudioTracks().forEach(track => masterStream.addTrack(track));
-        });
+        let audioMix: ReturnType<typeof streamAudio>;
+        try {
+            audioMix = streamAudio(streams.map(s => s.stream));
+            audioMix.stream.getAudioTracks().forEach(track => masterStream.addTrack(track));
+        } catch {
+            active = false;
+            masterStream.getTracks().forEach(t => t.stop());
+            setStreamStatus('error');
+            toast('Could not prepare stream audio.', 'error');
+            return;
+        }
 
         // Connect to the relay through the dev server's same-origin proxy
         // (avoids mixed-content blocking on the https:// phone-camera mode).
         const ws = new WebSocket(relayWsUrl());
         wsRef.current = ws;
+        const upload = streamUpload(ws, () => {
+            if (!mountedRef.current) return;
+            setStreamStatus('error');
+            toast('Stream upload stopped; local archive continues. Stop and restart when the relay is ready.', 'error');
+        });
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true; active = false;
+            upload.clear(); ws.close(); audioMix.close();
+            masterStream.getTracks().forEach(t => t.stop());
+            streamCleanupRef.current = null;
+        };
+        streamCleanupRef.current = cleanup;
 
         ws.onopen = () => {
             console.log("Connected to Relay Server");
@@ -892,7 +973,8 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                     name: presetFor(d.platform).label,
                 })),
             }));
-            // Not "live" yet — wait for the relay to confirm FFmpeg is encoding.
+            upload.flush();
+            // Wait for relay progress before showing live.
             setStreamStatus('connecting');
         };
 
@@ -920,6 +1002,13 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
             } catch { /* non-JSON frame */ }
         };
 
+        ws.onclose = () => {
+            upload.clear();
+            if (!cleaned && mountedRef.current) {
+                setStreamStatus('error');
+                toast('Relay disconnected; the local archive is still recording.', 'error');
+            }
+        };
         ws.onerror = () => {
             console.warn("Relay Server not found. Falling back to local archive only.");
             setStreamStatus('error');
@@ -928,15 +1017,19 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
         };
 
         // Start Recording the Master Stream
-        let mimeType = 'video/webm;codecs=vp9';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-             mimeType = ['video/webm', 'video/mp4', ''].find(t => t === '' || MediaRecorder.isTypeSupported(t)) || '';
+        const mimeType = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
+            .find(type => MediaRecorder.isTypeSupported(type));
+        if (!mimeType) {
+            cleanup(); releaseInputs(); setStreamStatus('error');
+            toast('Browser streaming requires WebM recording support. Use a compatible browser or native Stream.', 'error');
+            return;
         }
 
         const options = mimeType ? { mimeType } : undefined;
         
         try {
             const recorder = new MediaRecorder(masterStream, options);
+            const startedAt = performance.now();
             streamChunksRef.current = [];
             
             recorder.ondataavailable = (e) => {
@@ -945,29 +1038,31 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
                     streamChunksRef.current.push(e.data);
                     
                     // 2. Send to WebSocket Relay
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(e.data);
-                    }
+                    upload.push(e.data);
                 }
             };
             
             recorder.onstop = () => {
-                // Save the "Stream Archive"
-                const blob = new Blob(streamChunksRef.current, { type: recorder.mimeType });
-                const url = URL.createObjectURL(blob);
-                onSave([{
-                    id: Math.random().toString(36),
-                    type: ElementType.VIDEO,
-                    src: url,
-                    name: `Stream Archive (${new Date().toLocaleTimeString()})`,
-                    category: 'VIDEO',
-                    duration: recordingTime
-                }]);
-                
-                // Cleanup
-                active = false;
-                masterStream.getTracks().forEach(t => t.stop());
-                if (ws.readyState === WebSocket.OPEN) ws.close();
+                try {
+                    const blob = new Blob(streamChunksRef.current, { type: recorder.mimeType });
+                    if (blob.size) onSave([{
+                        id: Math.random().toString(36), type: ElementType.VIDEO,
+                        src: URL.createObjectURL(blob),
+                        name: `Stream Archive (${new Date().toLocaleTimeString()})`,
+                        category: 'VIDEO', duration: (performance.now() - startedAt) / 1000
+                    }]);
+                } finally {
+                    cleanup();
+                    streamChunksRef.current = [];
+                    streamRecorderRef.current = null;
+                    if (timerRef.current) clearInterval(timerRef.current);
+                    releaseInputs();
+                    if (mountedRef.current) { setIsStreaming(false); setStreamStatus('offline'); }
+                }
+            };
+            recorder.onerror = () => {
+                setStreamStatus('error');
+                toast('Browser recording failed. Any received archive chunks will be saved on stop.', 'error');
             };
 
             recorder.start(100); // 100ms chunks for lower latency streaming
@@ -979,14 +1074,15 @@ export const RecorderStudio: React.FC<RecorderStudioProps> = ({ onSave, onBusyCh
         } catch(e) {
             console.error("Stream recorder failed", e);
             setIsStreaming(false);
-            active = false;
+            setStreamStatus('error');
+            cleanup();
+            releaseInputs();
         }
     };
 
     const stopStreaming = () => {
         if (timerRef.current) clearInterval(timerRef.current);
-        setIsStreaming(false);
-        setStreamStatus('offline');
+        // Keep navigation locked until the final dataavailable/onstop has saved.
         if (streamRecorderRef.current && streamRecorderRef.current.state !== 'inactive') {
             streamRecorderRef.current.stop();
         }
