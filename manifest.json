@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "lalo.oma-bs",
   "name": "OMA-BS Studio",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "author": "Lalo Morales",
   "description": "Native recording, multistreaming, source audio, media gallery, and editing for Omarchy.",
   "kinds": ["bar-widget"],

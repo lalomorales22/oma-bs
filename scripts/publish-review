@@ -5,19 +5,19 @@ import subprocess
 import tempfile
 
 REPO = 'lalomorales22/oma-bs'
-BASE_TREE = 'f0014d76cf2476071719298017ba62abaa390c68'
+BASE_TREE = 'f333e4ee37cff27e826a1fea660d4aee11150c6a'
 
 
 def main():
     patch = Path(__file__).resolve().parents[1] / 'release/review.patch'
     if not patch.is_file():
-        raise SystemExit('Run this helper from the downloaded 0.7.2 release archive.')
+        raise SystemExit('Run this helper from the downloaded 0.7.3 release archive.')
     account = subprocess.check_output(['gh', 'api', 'user', '--jq', '.login'], text=True).strip()
     if account != 'lalomorales22':
         raise SystemExit('Use gh auth login with lalomorales22 before publishing this review.')
     downloads = Path.home() / 'Downloads'
     downloads.mkdir(exist_ok=True)
-    folder = Path(tempfile.mkdtemp(prefix='oma-bs-publish-0.7.2-', dir=downloads)) / 'repo'
+    folder = Path(tempfile.mkdtemp(prefix='oma-bs-publish-0.7.3-', dir=downloads)) / 'repo'
     subprocess.run(['gh', 'repo', 'clone', REPO, str(folder)], check=True)
     def git(*args):
         return subprocess.run(['git', '-C', str(folder), *args], check=True)
@@ -29,7 +29,7 @@ def main():
     git('config', 'user.name', 'Lalo Morales')
     git('config', 'user.email', '146933685+lalomorales22@users.noreply.github.com')
     git('add', '--all')
-    git('commit', '-m', 'fix: harden OMA-BS capture and streaming for 0.7.2')
+    git('commit', '-m', 'fix: restore native text input in OMA-BS 0.7.3')
     git('push', 'origin', 'HEAD:main')
     print('Review published: https://github.com/' + REPO)
     print('Check the new Actions run before marketplace submission.')

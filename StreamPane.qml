@@ -20,6 +20,7 @@ Item {
   implicitHeight: layout.implicitHeight
   onPanelOpenChanged: { if (!panelOpen) showKeys = false; else if (!loaded && !loadProc.running) loadProc.running = true }
   function change(index, key, value) {
+    if (index < 0 || index >= destinations.length) return
     var copy = JSON.parse(JSON.stringify(destinations))
     copy[index][key] = value
     if (key === "platform") { copy[index].url = ""; copy[index].key = "" }
@@ -145,7 +146,10 @@ Item {
         text: field.value; color: root.foreground; font.pixelSize: Style.font.bodySmall
         echoMode: field.secret ? TextInput.Password : TextInput.Normal
         maximumLength: 900; clip: true; selectByMouse: true; activeFocusOnTab: true
-        onEditingFinished: { field.edited(text); text = Qt.binding(function() { return field.value }) }
+        // Store user edits immediately; Save and tab changes must not depend
+        // on focus leaving a field first. Model updates do not emit textEdited.
+        onTextEdited: field.edited(text)
+        inputMethodHints: field.secret ? Qt.ImhSensitiveData | Qt.ImhNoPredictiveText : Qt.ImhNone
       }
       Text { anchors.fill: input; text: field.placeholder; visible: input.text === ""; color: root.foreground; opacity: 0.4; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
     }

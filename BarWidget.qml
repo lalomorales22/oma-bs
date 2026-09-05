@@ -207,17 +207,22 @@ BarWidget {
     }
   }
 
-  PopupCard {
+  // Text fields need their own keyboard-capable surface: the parent bar has
+  // WlrKeyboardFocus.None, which leaves an xdg popup without keyboard input.
+  KeyboardPanel {
     id: popup
     anchorItem: button
     bar: root.bar
     owner: root
     open: root.popupOpen
+    focusTarget: popupContent
     contentWidth: popup.fittedContentWidth(Style.space(root.expanded ? 780 : 390))
     contentHeight: popup.fittedContentHeight(content.implicitHeight + footer.implicitHeight + Style.space(12))
 
-    Item {
+    FocusScope {
+    id: popupContent
     anchors.fill: parent
+    Keys.onEscapePressed: root.close()
     Flickable {
       id: contentScroll
       anchors.top: parent.top
@@ -240,7 +245,7 @@ BarWidget {
         Column {
           Layout.fillWidth: true
           spacing: Style.space(2)
-          Text { text: "OMA-BS · 0.7.2"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.heading; font.bold: true }
+          Text { text: "OMA-BS · 0.7.3"; color: root.bar.foreground; font.family: root.bar.fontFamily; font.pixelSize: Style.font.heading; font.bold: true }
           Text { text: root.broadcastEnabled ? "STREAM · " + root.streamState.toUpperCase() : root.recording ? "RECORDING ACTIVE" : "OMARCHY BROADCAST STUDIO"; color: root.recording ? Color.urgent : Qt.darker(root.bar.foreground, 1.35); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption; font.letterSpacing: 1.4 }
         }
         Rectangle { width: Style.space(9); height: width; radius: width / 2; color: root.recording ? Color.urgent : Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.25) }

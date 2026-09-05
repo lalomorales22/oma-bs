@@ -27,7 +27,7 @@ overlay; an inline video/image/audio gallery; basic layered editing; and
 multi-destination RTMP(S) streaming. The optional browser studio provides
 additional editing and scene tools adapted from my Chroma Canvas application.
 
-The root manifest declares `lalo.oma-bs`, version `0.7.2`, kind `bar-widget`,
+The root manifest declares `lalo.oma-bs`, version `0.7.3`, kind `bar-widget`,
 entry point `BarWidget.qml`, default section `right`. Native capture depends on
 the installed Omarchy helpers, GPU Screen Recorder, FFmpeg/ffprobe, and mpv.
 Qt Multimedia is optional for inline playback. The browser studio additionally
